@@ -7,6 +7,7 @@ import argparse
 import os
 import socket
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -66,12 +67,15 @@ def dashboard(args: argparse.Namespace) -> None:
         print(f"Port {args.port} is already in use. Using port {port} instead.", flush=True)
 
     port_text = str(port)
+    cache_buster = f"run={int(time.time())}"
+    local_url = f"http://127.0.0.1:{port_text}?{cache_buster}"
     print("Dashboard will not open automatically.", flush=True)
-    print(f"Local URL:   http://127.0.0.1:{port_text}", flush=True)
+    print(f"Local URL:   {local_url}", flush=True)
     network_ip = local_network_ip() if address == "0.0.0.0" else None
     if network_ip is not None:
-        print(f"Network URL: http://{network_ip}:{port_text}", flush=True)
+        print(f"Network URL: http://{network_ip}:{port_text}?{cache_buster}", flush=True)
     print("Copy the URL above into your browser.", flush=True)
+    print("If the browser reports a failed JavaScript module, close the old tab and copy this fresh URL again.", flush=True)
 
     command = [
         str(PROJECT_ROOT / ".venv" / "bin" / "streamlit"),

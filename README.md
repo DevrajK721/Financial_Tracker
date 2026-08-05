@@ -29,11 +29,13 @@ If you prefer not to use terminal prompts for everyday tracking, start the dashb
 .venv/bin/python finance.py dashboard
 ```
 
-Streamlit runs in headless mode, so it should not automatically open a browser. Copy the printed local URL into your browser. By default this is:
+Streamlit runs in headless mode, so it should not automatically open a browser. Copy the printed local URL into your browser. By default this looks like:
 
 ```text
-http://127.0.0.1:8501
+http://127.0.0.1:8501?run=1234567890
 ```
+
+The `run=...` part changes each time you start the dashboard. It helps your browser avoid stale Streamlit JavaScript files after an app restart.
 
 If port `8501` is already in use, the launcher automatically tries the next free port and prints the URL to use, such as `http://127.0.0.1:8502`.
 
@@ -96,6 +98,8 @@ Start the dashboard:
 The dashboard is launched in headless mode, so it should **not automatically open a browser**. Streamlit prints a local URL in the terminal. Copy it into your browser manually.
 
 If the default port is busy, the app will choose the next free port and print the correct URL.
+
+If your browser shows `Failed to fetch dynamically imported module`, close the old dashboard tab and copy the fresh URL printed by the launcher. That error is usually a stale browser cache for Streamlit's frontend files, not a problem with your finance data.
 
 The dashboard disables Streamlit's file watcher for normal use and uses button-based navigation. The active page button is disabled, which avoids accidental duplicate clicks on the current page.
 
