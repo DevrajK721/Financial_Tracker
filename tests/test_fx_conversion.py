@@ -70,3 +70,28 @@ def test_usd_snapshot_contributes_to_net_worth_in_gbp(
     assert balances[0]["native_balance"] == 1000.00
     assert balances[0]["balance"] == 750.00
     assert balances[0]["fx_rate_to_gbp"] == 0.75
+
+
+def test_snapshot_record_preview_uses_native_account_currency() -> None:
+    month = date(2026, 8, 1)
+
+    with session_scope() as session:
+        account = Account(name="Crypto.com", account_type="trading", currency="USD")
+        session.add(account)
+        session.flush()
+        session.add(
+            MonthlyAccountSnapshot(
+                account_id=account.id,
+                month=month,
+                balance=Decimal("475.15"),
+                snapshot_type="start",
+            )
+        )
+
+    from app.dashboard import record_rows
+
+    rows = record_rows("snapshot")
+
+    assert rows[0]["Native Balance"] == "USD 475.15"
+    assert "USD 475.15" in rows[0]["Record"]
+    assert "£475.15" not in rows[0]["Record"]

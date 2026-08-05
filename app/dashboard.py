@@ -41,6 +41,7 @@ from src.services.dashboard_data import (
     spending_by_category_history,
     spending_history,
 )
+from src.services.fx import FxRateError
 from src.services.investment_attribution import (
     investment_account_history,
     investment_contribution_events,
@@ -227,6 +228,10 @@ def fetch_goals() -> list[Goal]:
 
 def account_options(accounts: list[Account]) -> dict[str, int]:
     return {f"{account.name} - {display_label(account.account_type, ACCOUNT_TYPE_LABELS)}": account.id for account in accounts}
+
+
+def account_currency_by_id(accounts: list[Account]) -> dict[int, str]:
+    return {account.id: account.currency.upper() for account in accounts}
 
 
 def goal_options(goals: list[Goal]) -> dict[str, int]:
@@ -1539,6 +1544,7 @@ def render_add_entries(default_month: date) -> None:
     accounts = fetch_accounts()
     goals = fetch_goals()
     account_map = account_options(accounts)
+    account_currencies = account_currency_by_id(accounts)
     goal_map = goal_options(goals)
     add_section = select_add_section()
     if not accounts:
@@ -1572,6 +1578,7 @@ def render_add_entries(default_month: date) -> None:
     with st.expander("📊 Account Balance Snapshot", expanded=add_section == "snapshot"):
         with st.form("add_snapshot_form"):
             account_label = st.selectbox("Account", list(account_map))
+            selected_currency = account_currencies[account_map[account_label]]
             month = month_start(st.date_input("Month", value=default_month))
             snapshot_type = select_from_labels(
                 "Snapshot type",
@@ -1579,7 +1586,8 @@ def render_add_entries(default_month: date) -> None:
                 current_value="end",
                 key="add_snapshot_type",
             )
-            balance = st.number_input("Balance", step=0.01, format="%.2f")
+            st.caption(f"Enter this balance in the account's native currency: {selected_currency}.")
+            balance = st.number_input(f"Balance ({selected_currency})", step=0.01, format="%.2f")
             submitted = st.form_submit_button("Add snapshot")
             if submitted:
                 save_record(
@@ -1717,9 +1725,10 @@ def render_add_entries(default_month: date) -> None:
 
         with st.form("add_debt_form"):
             account_label = st.selectbox("📉 Debt account", list(debt_accounts), key="debt_account")
+            selected_currency = account_currencies[debt_accounts[account_label]]
             month = month_start(st.date_input("📅 Balance month", value=default_month, key="debt_balance_month"))
             current_balance = st.number_input(
-                "💷 Current outstanding debt balance",
+                f"💷 Current outstanding debt balance ({selected_currency})",
                 step=0.01,
                 format="%.2f",
                 key="debt_current_balance",
@@ -1969,6 +1978,7 @@ def render_edit_monthly_record(default_month: date) -> None:
     accounts = fetch_accounts()
     goals = fetch_goals()
     account_map = account_options(accounts)
+    account_currencies = account_currency_by_id(accounts)
     goal_map = goal_options(goals)
     account_labels = list(account_map)
     goal_labels = list(goal_map)
@@ -1987,7 +1997,14 @@ def render_edit_monthly_record(default_month: date) -> None:
                 current_value=record.snapshot_type,
                 key="edit_snapshot_type",
             )
-            balance = st.number_input("Balance", value=float(record.balance), step=0.01, format="%.2f")
+            selected_currency = account_currencies[account_map[account_label]]
+            st.caption(f"Stored in native account currency: {selected_currency}.")
+            balance = st.number_input(
+                f"Balance ({selected_currency})",
+                value=float(record.balance),
+                step=0.01,
+                format="%.2f",
+            )
 
         elif record_type == "income":
             current_account = next(
@@ -2065,8 +2082,9 @@ def render_edit_monthly_record(default_month: date) -> None:
                 st.date_input("📅 Balance month", value=default_month, key=f"edit_debt_balance_month_{record.id}")
             )
             existing_debt_balance = fetch_end_snapshot_balance(account_map[account_label], debt_balance_month)
+            selected_currency = account_currencies[account_map[account_label]]
             current_debt_balance = st.number_input(
-                "💷 Current outstanding debt balance",
+                f"💷 Current outstanding debt balance ({selected_currency})",
                 value=float(existing_debt_balance),
                 step=0.01,
                 format="%.2f",
@@ -2316,15 +2334,16 @@ def delete_account_dependencies(session, account_ids: list[int]) -> None:
                 session.delete(record)
 
 
-def lookup_names() -> tuple[dict[int, str], dict[int, str]]:
-    """Return account and goal names for friendly record previews."""
+def lookup_names() -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
+    """Return account/goal labels for friendly record previews."""
     with session_scope() as session:
         accounts = session.scalars(select(Account)).all()
         goals = session.scalars(select(Goal)).all()
 
     account_names = {account.id: account.name for account in accounts}
+    account_currencies = {account.id: account.currency.upper() for account in accounts}
     goal_names = {goal.id: goal.name for goal in goals}
-    return account_names, goal_names
+    return account_names, account_currencies, goal_names
 
 
 def name_for(lookup: dict[int, str], record_id: int | None) -> str:
@@ -2333,14 +2352,28 @@ def name_for(lookup: dict[int, str], record_id: int | None) -> str:
     return lookup.get(record_id, f"Record {record_id}")
 
 
-def record_summary(record_type: str, record, account_names: dict[int, str], goal_names: dict[int, str]) -> str:
+def currency_for(lookup: dict[int, str], account_id: int | None) -> str:
+    if account_id is None:
+        return "GBP"
+    return lookup.get(account_id, "GBP")
+
+
+def record_summary(
+    record_type: str,
+    record,
+    account_names: dict[int, str],
+    account_currencies: dict[int, str],
+    goal_names: dict[int, str],
+) -> str:
     """Create a short, human-readable label for selecting records."""
     if record_type == "account":
         return f"{record.name} - {display_label(record.account_type, ACCOUNT_TYPE_LABELS)}"
     if record_type == "snapshot":
+        currency = currency_for(account_currencies, record.account_id)
         return (
             f"{record.month:%B %Y} - {name_for(account_names, record.account_id)} - "
-            f"{display_label(record.snapshot_type, SNAPSHOT_TYPE_LABELS)} - {money(record.balance)}"
+            f"{display_label(record.snapshot_type, SNAPSHOT_TYPE_LABELS)} - "
+            f"{currency_money(record.balance, currency)}"
         )
     if record_type == "income":
         label = record.label or display_label(record.income_type, INCOME_TYPE_LABELS)
@@ -2367,13 +2400,13 @@ def record_summary(record_type: str, record, account_names: dict[int, str], goal
 def record_rows(record_type: str) -> list[dict]:
     """Return display rows with internal record IDs kept out of the table labels."""
     model = DELETE_MODELS[record_type]
-    account_names, goal_names = lookup_names()
+    account_names, account_currencies, goal_names = lookup_names()
     with session_scope() as session:
         records = session.scalars(select(model).order_by(model.id)).all()
 
     rows = []
     for position, record in enumerate(records, start=1):
-        summary = record_summary(record_type, record, account_names, goal_names)
+        summary = record_summary(record_type, record, account_names, account_currencies, goal_names)
         row = {"_record_id": record.id, "Record": f"Entry {position} - {summary}"}
         if record_type == "account":
             row.update(
@@ -2386,12 +2419,13 @@ def record_rows(record_type: str) -> list[dict]:
                 }
             )
         elif record_type == "snapshot":
+            currency = currency_for(account_currencies, record.account_id)
             row.update(
                 {
                     "Month": record.month.strftime("%B %Y"),
                     "Account": name_for(account_names, record.account_id),
                     "Snapshot": display_label(record.snapshot_type, SNAPSHOT_TYPE_LABELS),
-                    "Balance": money(record.balance),
+                    "Native Balance": currency_money(record.balance, currency),
                 }
             )
         elif record_type == "income":
@@ -2573,11 +2607,28 @@ def main() -> None:
         )
         return
 
-    summary = build_monthly_summary(month)
     page_header(month)
 
     if page == "Entries":
         render_entries(month)
+        return
+
+    try:
+        summary = build_monthly_summary(month)
+    except FxRateError as error:
+        st.error(
+            "A foreign-currency account needs an exchange rate before this dashboard page can calculate GBP totals."
+        )
+        st.markdown(
+            f"<div style='background:#101016; border:1px solid #35323c; border-radius:12px; "
+            f"padding:1rem; color:#d8d0d2;'>"
+            f"<strong>What happened:</strong> {escape(str(error))}<br><br>"
+            "Your native account data is still safe. Check your internet connection, then refresh this page. "
+            "Once a rate has been fetched, it is cached locally in <code>data/runtime/fx_rates.json</code>. "
+            "You can still use the Entries page to add, edit, or delete records."
+            "</div>",
+            unsafe_allow_html=True,
+        )
         return
 
     summary_metrics(summary)
