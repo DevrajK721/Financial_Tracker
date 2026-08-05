@@ -103,6 +103,37 @@ If your browser shows `Failed to fetch dynamically imported module`, close the o
 
 The dashboard disables Streamlit's file watcher for normal use and uses button-based navigation. The active page button is disabled, which avoids accidental duplicate clicks on the current page.
 
+## macOS Clickable App
+
+You can generate a local Mac app that launches the dashboard and opens it in Google Chrome:
+
+```zsh
+.venv/bin/python scripts/create_macos_app.py
+```
+
+This creates:
+
+```text
+dist/Finance Tracker.app
+```
+
+To use it:
+
+1. Open the project folder in Finder.
+2. Open `dist/`.
+3. Drag `Finance Tracker.app` into your Dock.
+4. Click it whenever you want to use the dashboard.
+
+The app starts Streamlit in the background, waits until it is ready, then opens the dashboard in Google Chrome. If the dashboard is already running from this launcher, clicking the app reuses the existing server instead of starting another one.
+
+The generated `.app` is intentionally not committed to git because it contains the absolute path to your local project folder. Anyone else who clones the project should run the same command on their own Mac to create their own launcher.
+
+Dashboard logs are saved locally here:
+
+```text
+data/runtime/dashboard.log
+```
+
 ## What To Track First
 
 1. Add accounts.
