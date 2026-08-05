@@ -97,6 +97,8 @@ The dashboard is launched in headless mode, so it should **not automatically ope
 
 If the default port is busy, the app will choose the next free port and print the correct URL.
 
+The dashboard disables Streamlit's file watcher for normal use and uses button-based navigation. The active page button is disabled, which avoids accidental duplicate clicks on the current page.
+
 ## What To Track First
 
 1. Add accounts.
@@ -170,7 +172,9 @@ Snapshot type [end/start]: end
 Balance: 1250.75
 ```
 
-Use `end` snapshots for net worth. Add both `start` and `end` snapshots for investment accounts if you want investment growth estimates.
+For each account and month, the app uses the `end` snapshot when one exists. If there is no `end` snapshot yet, it falls back to the `start` snapshot so balances and net worth do not disappear while you are still entering the month.
+
+Add both `start` and `end` snapshots for savings and investment accounts if you want growth estimates after adjusting for transfers.
 
 ## Salary And PAYE
 
@@ -418,6 +422,8 @@ The dashboard is organised with a modern top menu:
 - `🎯 Goals`: goal funding and subscriptions.
 - `🧾 Records`: readable records and summary JSON.
 
+Navigation uses button-style page controls rather than browser links. The page you are already on is disabled, so clicking the active page again should not trigger another dashboard rerun.
+
 The app uses a dark theme with red accents configured in `.streamlit/config.toml`.
 
 ## Local Data Storage
@@ -441,6 +447,8 @@ The main pieces are:
 
 Because it is local, you should back up `data/processed/finances.db` if you care about preserving the records.
 
+For GitHub/public sharing, the real database and raw data folders are ignored by `.gitignore`. The repository keeps only empty `.gitkeep` files inside `data/raw/` and `data/processed/` so the folder structure exists for new users without publishing private finance data.
+
 ## Tests
 
 ```zsh
@@ -460,7 +468,8 @@ src/services/     Finance calculations and dashboard queries
 src/reports/      Summary builders
 app/dashboard.py  Streamlit dashboard
 tests/            Automated tests
-data/processed/   SQLite database
+data/processed/   Local SQLite database folder
+data/raw/         Optional local import folder
 ```
 
 ## Current Limitations
