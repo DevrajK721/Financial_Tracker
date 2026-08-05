@@ -40,6 +40,11 @@ from src.services.dashboard_data import (
     spending_by_category_history,
     spending_history,
 )
+from src.services.investment_attribution import (
+    investment_account_history,
+    investment_contribution_events,
+    project_investment_balances,
+)
 from src.services.paye import STUDENT_LOAN_MONTHLY_THRESHOLDS, estimate_monthly_salary
 from src.services.projections import latest_month
 
@@ -90,11 +95,12 @@ EXPENSE_CATEGORIES = list(EXPENSE_CATEGORY_LABELS)
 INCOME_TYPES = list(INCOME_TYPE_LABELS)
 SNAPSHOT_TYPES = list(SNAPSHOT_TYPE_LABELS)
 BILLING_FREQUENCIES = list(BILLING_FREQUENCY_LABELS)
-PAGES = ["Entries", "Balances", "Statistics", "Spending", "Debts", "Goals", "Raw Data"]
+PAGES = ["Entries", "Balances", "Statistics", "Investments", "Spending", "Debts", "Goals", "Raw Data"]
 PAGE_LABELS = {
     "Entries": "✍️ Entries",
     "Balances": "🏦 Balances",
     "Statistics": "📈 Statistics",
+    "Investments": "📊 Investments",
     "Spending": "🥧 Spending",
     "Debts": "📉 Debts",
     "Goals": "🎯 Goals",
@@ -624,7 +630,7 @@ def page_header(month: date) -> None:
         f"""
         <div class="top-panel">
           <h1>Finance Command Centre</h1>
-          <p>{month.strftime("%B %Y")} dashboard. Use the top menu to move between entries, balances, statistics, spending, debts, goals, and raw data.</p>
+          <p>{month.strftime("%B %Y")} dashboard. Use the top menu to move between entries, balances, statistics, investments, spending, debts, goals, and raw data.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -808,6 +814,176 @@ def render_spending(month: date, summary: dict) -> None:
             color_discrete_sequence=ACCENT_SEQUENCE,
         )
         st.plotly_chart(chart_theme(fig), width="stretch")
+
+
+def render_investments(month: date) -> None:
+    st.subheader("📊 Investments")
+    st.caption(
+        "Tracks trading, ISA, savings, and pension-style accounts. Contributions and withdrawals are shown separately "
+        "so balance jumps are not confused with investment growth."
+    )
+
+    history = pd.DataFrame(investment_account_history())
+    contribution_events = pd.DataFrame(investment_contribution_events())
+    projection = pd.DataFrame(project_investment_balances(month))
+
+    if history.empty:
+        st.info("Add snapshots for investment, ISA, savings, or pension accounts to build investment tracking.")
+        return
+
+    history["Account Type"] = history["account_type"].apply(lambda value: display_label(value, ACCOUNT_TYPE_LABELS))
+    money_columns = [
+        "start_balance",
+        "end_balance",
+        "current_balance",
+        "contributions",
+        "withdrawals",
+        "net_contributions",
+        "performance_growth",
+    ]
+    for column in money_columns:
+        history[column] = pd.to_numeric(history[column], errors="coerce")
+
+    latest_month_rows = history[history["month"] == month.isoformat()]
+    if not latest_month_rows.empty:
+        total_balance = latest_month_rows["current_balance"].sum()
+        total_net_contributions = latest_month_rows["net_contributions"].sum()
+        total_performance = latest_month_rows["performance_growth"].fillna(0).sum()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Investment Balance", money(total_balance))
+        col2.metric("Net Contributions This Month", money(total_net_contributions))
+        col3.metric("Performance / Interest This Month", money(total_performance))
+
+    fig = go.Figure()
+    for account in sorted(history["account"].unique()):
+        account_history = history[history["account"] == account]
+        fig.add_trace(
+            go.Scatter(
+                x=account_history["month"],
+                y=account_history["current_balance"],
+                mode="lines+markers",
+                name=f"{account} balance",
+                line=dict(width=3),
+            )
+        )
+
+    if not projection.empty:
+        projection["projected_balance"] = pd.to_numeric(projection["projected_balance"], errors="coerce")
+        projection["performance_only_balance"] = pd.to_numeric(
+            projection["performance_only_balance"],
+            errors="coerce",
+        )
+        for account in sorted(projection["account"].unique()):
+            account_projection = projection[projection["account"] == account]
+            fig.add_trace(
+                go.Scatter(
+                    x=account_projection["month"],
+                    y=account_projection["projected_balance"],
+                    mode="lines",
+                    name=f"{account} projected incl. regular contributions",
+                    line=dict(width=2, dash="dash"),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=account_projection["month"],
+                    y=account_projection["performance_only_balance"],
+                    mode="lines",
+                    name=f"{account} projected performance only",
+                    line=dict(width=2, dash="dot"),
+                )
+            )
+
+    contribution_markers = history[history["has_contribution"].astype(bool)].copy()
+    if not contribution_markers.empty:
+        contribution_markers["marker_label"] = contribution_markers["net_contributions"].apply(
+            lambda value: f"Net contribution: {money(value)}"
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=contribution_markers["month"],
+                y=contribution_markers["current_balance"],
+                mode="markers",
+                name="Contribution / withdrawal month",
+                marker=dict(symbol="diamond", size=13, color="#f2c875", line=dict(color="#08080a", width=1)),
+                text=contribution_markers["account"] + "<br>" + contribution_markers["marker_label"],
+                hovertemplate="%{text}<br>Balance: £%{y:,.2f}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(title="Investment Balances, Contributions, and Projections")
+    st.plotly_chart(chart_theme(fig), width="stretch")
+
+    monthly_split = history.copy()
+    monthly_split["Performance / Interest"] = monthly_split["performance_growth"]
+    monthly_split["Net Contributions"] = monthly_split["net_contributions"]
+    split_chart = px.bar(
+        monthly_split,
+        x="month",
+        y=["Performance / Interest", "Net Contributions"],
+        color_discrete_sequence=["#8fb8ff", "#f2c875"],
+        facet_row="account",
+        title="Monthly Change Split: Performance vs Contributions",
+    )
+    st.plotly_chart(chart_theme(split_chart), width="stretch")
+
+    display_rows = history.rename(
+        columns={
+            "month": "Month",
+            "account": "Account",
+            "start_balance": "Start Balance",
+            "end_balance": "End Balance",
+            "current_balance": "Current Balance",
+            "contributions": "Contributions In",
+            "withdrawals": "Withdrawals Out",
+            "net_contributions": "Net Contributions",
+            "performance_growth": "Performance / Interest",
+            "has_full_snapshot": "Has Start & End Snapshot",
+        }
+    )
+    for column in [
+        "Start Balance",
+        "End Balance",
+        "Current Balance",
+        "Contributions In",
+        "Withdrawals Out",
+        "Net Contributions",
+        "Performance / Interest",
+    ]:
+        display_rows[column] = display_rows[column].apply(lambda value: "" if pd.isna(value) else money(value))
+
+    st.dataframe(
+        display_rows[
+            [
+                "Month",
+                "Account",
+                "Account Type",
+                "Current Balance",
+                "Net Contributions",
+                "Performance / Interest",
+                "Has Start & End Snapshot",
+            ]
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+    if not contribution_events.empty:
+        contribution_events["Amount"] = contribution_events["amount"].apply(money)
+        contribution_events = contribution_events.rename(
+            columns={
+                "month": "Month",
+                "account": "Account",
+                "event_type": "Event",
+                "label": "Label",
+            }
+        )
+        st.subheader("Contribution and Withdrawal Events")
+        st.dataframe(
+            contribution_events[["Month", "Account", "Event", "Amount", "Label"]],
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def render_debts(summary: dict) -> None:
@@ -1926,6 +2102,8 @@ def main() -> None:
         render_balances(month)
     elif page == "Statistics":
         render_statistics(summary)
+    elif page == "Investments":
+        render_investments(month)
     elif page == "Spending":
         render_spending(month, summary)
     elif page == "Debts":

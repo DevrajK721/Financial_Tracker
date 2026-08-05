@@ -13,6 +13,175 @@ from src.db import session_scope
 from src.models.account import Account
 from src.models.monthly_account_snapshot import MonthlyAccountSnapshot
 from src.models.monthly_transfer import MonthlyTransfer
+from src.services.projections import add_months
+
+
+def investment_account_history() -> list[dict[str, Decimal | str]]:
+    """Return monthly investment balances, contributions, withdrawals, and growth.
+
+    Contributions and withdrawals come from transfers involving investment-like
+    accounts. Performance/growth is only calculated when both start and end
+    snapshots exist for the account in the same month.
+    """
+    with session_scope() as session:
+        accounts = session.scalars(
+            select(Account)
+            .where(Account.account_type.in_(GROWTH_ACCOUNT_TYPES))
+            .order_by(Account.name)
+        ).all()
+        snapshots = session.scalars(select(MonthlyAccountSnapshot)).all()
+        transfers = session.scalars(select(MonthlyTransfer)).all()
+
+    account_names = {account.id: account.name for account in accounts}
+    account_types = {account.id: account.account_type for account in accounts}
+    investment_account_ids = set(account_names)
+
+    snapshot_map: dict[tuple[int, date], dict[str, Decimal]] = {}
+    months: set[date] = set()
+    for snapshot in snapshots:
+        if snapshot.account_id not in investment_account_ids:
+            continue
+        key = (snapshot.account_id, snapshot.month)
+        snapshot_map.setdefault(key, {})[snapshot.snapshot_type] = snapshot.balance
+        months.add(snapshot.month)
+
+    transfer_in: dict[tuple[int, date], Decimal] = {}
+    transfer_out: dict[tuple[int, date], Decimal] = {}
+    for transfer in transfers:
+        if transfer.to_account_id in investment_account_ids:
+            key = (transfer.to_account_id, transfer.month)
+            transfer_in[key] = transfer_in.get(key, Decimal("0.00")) + transfer.amount
+            months.add(transfer.month)
+        if transfer.from_account_id in investment_account_ids:
+            key = (transfer.from_account_id, transfer.month)
+            transfer_out[key] = transfer_out.get(key, Decimal("0.00")) + transfer.amount
+            months.add(transfer.month)
+
+    rows: list[dict[str, Decimal | str]] = []
+    for account_id in sorted(investment_account_ids, key=lambda value: account_names[value].lower()):
+        for month in sorted(months):
+            key = (account_id, month)
+            account_snapshots = snapshot_map.get(key, {})
+            start_balance = account_snapshots.get("start")
+            end_balance = account_snapshots.get("end")
+            contributions = transfer_in.get(key, Decimal("0.00"))
+            withdrawals = transfer_out.get(key, Decimal("0.00"))
+            net_contributions = contributions - withdrawals
+
+            if start_balance is None and end_balance is None and net_contributions == 0:
+                continue
+
+            performance_growth: Decimal | None = None
+            if start_balance is not None and end_balance is not None:
+                performance_growth = end_balance - start_balance - net_contributions
+
+            current_balance = end_balance if end_balance is not None else start_balance
+            rows.append(
+                {
+                    "month": month.isoformat(),
+                    "account": account_names[account_id],
+                    "account_type": account_types[account_id],
+                    "start_balance": start_balance,
+                    "end_balance": end_balance,
+                    "current_balance": current_balance or Decimal("0.00"),
+                    "contributions": contributions,
+                    "withdrawals": withdrawals,
+                    "net_contributions": net_contributions,
+                    "performance_growth": performance_growth,
+                    "has_contribution": net_contributions != 0,
+                    "has_full_snapshot": start_balance is not None and end_balance is not None,
+                }
+            )
+
+    return rows
+
+
+def investment_contribution_events() -> list[dict[str, Decimal | str]]:
+    """Return investment transfer events for chart markers."""
+    with session_scope() as session:
+        accounts = session.scalars(select(Account).where(Account.account_type.in_(GROWTH_ACCOUNT_TYPES))).all()
+        transfers = session.scalars(select(MonthlyTransfer).order_by(MonthlyTransfer.month)).all()
+
+    account_names = {account.id: account.name for account in accounts}
+    investment_account_ids = set(account_names)
+
+    events: list[dict[str, Decimal | str]] = []
+    for transfer in transfers:
+        if transfer.to_account_id in investment_account_ids:
+            events.append(
+                {
+                    "month": transfer.month.isoformat(),
+                    "account": account_names[transfer.to_account_id],
+                    "amount": transfer.amount,
+                    "event_type": "Contribution",
+                    "label": transfer.label or "Contribution",
+                }
+            )
+        if transfer.from_account_id in investment_account_ids:
+            events.append(
+                {
+                    "month": transfer.month.isoformat(),
+                    "account": account_names[transfer.from_account_id],
+                    "amount": -transfer.amount,
+                    "event_type": "Withdrawal",
+                    "label": transfer.label or "Withdrawal",
+                }
+            )
+
+    return events
+
+
+def project_investment_balances(month: date, months_forward: int = 12, lookback_months: int = 6) -> list[dict[str, Decimal | str]]:
+    """Project investment balances using recent growth and contribution averages."""
+    history = investment_account_history()
+    rows_by_account: dict[str, list[dict[str, Decimal | str]]] = {}
+    for row in history:
+        if date.fromisoformat(str(row["month"])) <= month:
+            rows_by_account.setdefault(str(row["account"]), []).append(row)
+
+    projections: list[dict[str, Decimal | str]] = []
+    for account, rows in rows_by_account.items():
+        rows = sorted(rows, key=lambda row: str(row["month"]))
+        current_rows = [row for row in rows if date.fromisoformat(str(row["month"])) == month]
+        if current_rows:
+            current_balance = Decimal(str(current_rows[-1]["current_balance"]))
+        else:
+            current_balance = Decimal(str(rows[-1]["current_balance"]))
+
+        recent_rows = rows[-lookback_months:]
+        performance_values = [
+            Decimal(str(row["performance_growth"]))
+            for row in recent_rows
+            if row["performance_growth"] is not None
+        ]
+        contribution_values = [Decimal(str(row["net_contributions"])) for row in recent_rows]
+
+        average_performance = Decimal("0.00")
+        if performance_values:
+            average_performance = sum(performance_values, Decimal("0.00")) / Decimal(len(performance_values))
+
+        average_contribution = Decimal("0.00")
+        if contribution_values:
+            average_contribution = sum(contribution_values, Decimal("0.00")) / Decimal(len(contribution_values))
+
+        projected_balance = current_balance
+        performance_only_balance = current_balance
+        for index in range(1, months_forward + 1):
+            projected_month = add_months(month, index)
+            projected_balance = projected_balance + average_performance + average_contribution
+            performance_only_balance = performance_only_balance + average_performance
+            projections.append(
+                {
+                    "month": projected_month.isoformat(),
+                    "account": account,
+                    "projected_balance": projected_balance,
+                    "performance_only_balance": performance_only_balance,
+                    "average_performance": average_performance,
+                    "average_contribution": average_contribution,
+                }
+            )
+
+    return projections
 
 
 def estimate_investment_growth(month: date) -> dict[str, Decimal]:

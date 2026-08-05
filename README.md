@@ -176,6 +176,35 @@ For each account and month, the app uses the `end` snapshot when one exists. If 
 
 Add both `start` and `end` snapshots for savings and investment accounts if you want growth estimates after adjusting for transfers.
 
+## Investments
+
+Use the `📊 Investments` dashboard page for Trading Accounts, Cash ISAs, Lifetime ISAs, Stocks & Shares ISAs, High-Interest Savings Accounts, and Pensions.
+
+The investment page shows:
+
+- current balance for each investment-style account
+- balance history over time
+- projected balance growth for each account
+- a separate performance-only projection
+- contribution and withdrawal markers on the chart
+- monthly split between contributions and performance/interest
+
+To get the cleanest investment tracking:
+
+1. Add each investment account using the correct account type.
+2. Add a `start` snapshot for the first day of the month.
+3. Add transfers into the account when you contribute new money.
+4. Add transfers out of the account when you withdraw money.
+5. Add an `end` snapshot at month end.
+
+The app then estimates:
+
+```text
+performance / interest = end balance - start balance - net contributions
+```
+
+This is why transfers matter. If you add £500 to a Stocks & Shares ISA, the chart marks that as a contribution instead of pretending your investment grew by £500.
+
 ## Salary And PAYE
 
 Use this for salary where you want tax estimates:
@@ -417,6 +446,7 @@ The dashboard is organised with a modern top menu:
 - `✍️ Entries`: add, edit, and delete finance records directly in the app.
 - `🏦 Balances`: account balances and balance mix.
 - `📈 Statistics`: net worth growth, assets, debts, and projected net worth.
+- `📊 Investments`: trading, ISA, savings, and pension balances with contribution markers and projections.
 - `🥧 Spending`: spending pie chart, previous-month comparison, total spending, and category trends.
 - `📉 Debts`: debt totals, actual debt growth, projected debt growth, debt mix, and payoff estimates.
 - `🎯 Goals`: goal funding and subscriptions.
