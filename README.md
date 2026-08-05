@@ -457,7 +457,7 @@ The dashboard is organised with a modern top menu:
 
 Navigation uses same-tab links in the top menu. This avoids Streamlit button rerun issues and should not open a new browser tab.
 
-The read-only dashboard pages use static HTML/SVG charts and static tables rather than interactive chart/dataframe components. This is intentional: it keeps the dashboard stable on local Streamlit and avoids segmentation faults from heavier frontend components.
+The read-only dashboard pages use lightweight HTML/SVG charts and static tables rather than heavy chart/dataframe components. Line chart points are interactive: hover, click, or tab to a point to show its month, series, and value while keeping the dashboard stable on local Streamlit.
 
 The app uses a dark theme with red accents configured in `.streamlit/config.toml`.
 

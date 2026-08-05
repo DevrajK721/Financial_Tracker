@@ -708,6 +708,16 @@ def investment_svg_chart(chart_data: pd.DataFrame, markers: pd.DataFrame, title:
         "<div style='width:100%; overflow-x:auto;'>",
         f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='{escape(title)}' "
         "style='width:100%; min-width:360px; background:#101016; border:1px solid #35323c; border-radius:12px;'>",
+        "<style>"
+        ".data-point { cursor:pointer; outline:none; }"
+        ".data-point circle { transition:r 120ms ease, stroke-width 120ms ease; }"
+        ".data-point:hover circle, .data-point:focus circle { r:7; stroke:#f7f1f1; stroke-width:2; }"
+        ".point-tooltip { opacity:0; pointer-events:none; transition:opacity 120ms ease; }"
+        ".data-point:hover .point-tooltip, .data-point:focus .point-tooltip { opacity:1; }"
+        ".contribution-point { cursor:pointer; outline:none; }"
+        ".contribution-point .point-tooltip { opacity:0; pointer-events:none; transition:opacity 120ms ease; }"
+        ".contribution-point:hover .point-tooltip, .contribution-point:focus .point-tooltip { opacity:1; }"
+        "</style>",
         f"<text x='{left}' y='26' fill='#f7f1f1' font-size='17' font-weight='700'>{escape(title)}</text>",
         f"<line x1='{left}' y1='{top + plot_height}' x2='{left + plot_width}' y2='{top + plot_height}' stroke='#35323c' />",
         f"<line x1='{left}' y1='{top}' x2='{left}' y2='{top + plot_height}' stroke='#35323c' />",
@@ -766,7 +776,22 @@ def investment_svg_chart(chart_data: pd.DataFrame, markers: pd.DataFrame, title:
         for row in series_rows.itertuples(index=False):
             x = x_pos(row.month)
             y = y_pos(float(row.value))
-            elements.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='4' fill='{style['color']}' />")
+            tooltip_x = min(max(x + 10, left), width - 176)
+            tooltip_y = max(y - 42, top + 4)
+            tooltip = f"{row.month.strftime('%b %Y')} | {series} | {money(float(row.value))}"
+            elements.append(
+                f"<g class='data-point' tabindex='0' aria-label='{escape(tooltip)}'>"
+                f"<title>{escape(tooltip)}</title>"
+                f"<circle cx='{x:.1f}' cy='{y:.1f}' r='4' fill='{style['color']}' />"
+                f"<g class='point-tooltip'>"
+                f"<rect x='{tooltip_x:.1f}' y='{tooltip_y:.1f}' width='166' height='34' rx='7' "
+                "fill='#08080a' stroke='#f2c875' stroke-width='1' />"
+                f"<text x='{tooltip_x + 8:.1f}' y='{tooltip_y + 14:.1f}' fill='#f7f1f1' font-size='10'>"
+                f"{escape(row.month.strftime('%b %Y'))}</text>"
+                f"<text x='{tooltip_x + 8:.1f}' y='{tooltip_y + 27:.1f}' fill='#f2c875' font-size='10'>"
+                f"{escape(series)}: {escape(money(float(row.value)))}</text>"
+                "</g></g>"
+            )
 
     if not markers.empty:
         clean_markers = markers.dropna(subset=["month", "current_balance"]).copy()
@@ -777,10 +802,21 @@ def investment_svg_chart(chart_data: pd.DataFrame, markers: pd.DataFrame, title:
             x = x_pos(marker.month)
             y = y_pos(float(marker.current_balance))
             label = escape(str(getattr(marker, "marker_label", "Contribution / withdrawal")))
+            tooltip_x = min(max(x + 10, left), width - 176)
+            tooltip_y = max(y - 42, top + 4)
             elements.append(
+                f"<g class='contribution-point' tabindex='0' aria-label='{label}'>"
                 f"<polygon points='{x:.1f},{y - 8:.1f} {x + 8:.1f},{y:.1f} {x:.1f},{y + 8:.1f} {x - 8:.1f},{y:.1f}' "
                 "fill='#f2c875' stroke='#08080a' stroke-width='1.5'>"
                 f"<title>{label}</title></polygon>"
+                f"<g class='point-tooltip'>"
+                f"<rect x='{tooltip_x:.1f}' y='{tooltip_y:.1f}' width='166' height='34' rx='7' "
+                "fill='#08080a' stroke='#f2c875' stroke-width='1' />"
+                f"<text x='{tooltip_x + 8:.1f}' y='{tooltip_y + 14:.1f}' fill='#f7f1f1' font-size='10'>"
+                f"{escape(marker.month.strftime('%b %Y'))}</text>"
+                f"<text x='{tooltip_x + 8:.1f}' y='{tooltip_y + 27:.1f}' fill='#f2c875' font-size='10'>"
+                f"{label}</text>"
+                "</g></g>"
             )
 
     elements.extend(["</svg>", "</div>"])
