@@ -1,0 +1,48 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Local finance data
+# Keep real account balances, imports, and generated databases out of git.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+
+# Streamlit secrets should stay local.
+# Keep .streamlit/config.toml tracked so the app theme ships with the project.
+.streamlit/secrets.toml
+
+# Logs and local runtime output
+*.log
+logs/
+tmp/
+temp/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
