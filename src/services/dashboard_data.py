@@ -16,6 +16,7 @@ from src.models.monthly_expense import MonthlyExpense
 from src.models.monthly_income import MonthlyIncome
 from src.models.monthly_transfer import MonthlyTransfer
 from src.models.subscription import Subscription
+from src.services.fx import convert_to_gbp
 from src.services.net_worth import calculate_net_worth_details
 from src.services.snapshot_balances import monthly_account_balances
 
@@ -39,12 +40,16 @@ def available_months() -> list[date]:
 
 
 def account_balances(month: date) -> list[dict]:
-    """Return one current balance per account, preferring end snapshots."""
+    """Return one current balance per account, converted to GBP for totals."""
     return [
         {
             "account": balance.account_name,
             "type": balance.account_type,
+            "currency": balance.currency,
+            "native_balance": money_float(balance.native_balance),
             "balance": money_float(balance.balance),
+            "fx_rate_to_gbp": money_float(balance.fx_rate_to_gbp),
+            "fx_rate_date": balance.fx_rate_date,
             "snapshot_type": balance.snapshot_type,
             "is_debt": balance.is_debt,
             "is_emergency_fund": balance.is_emergency_fund,
@@ -53,14 +58,23 @@ def account_balances(month: date) -> list[dict]:
     ]
 
 
+def account_currencies() -> dict[int, str]:
+    """Return account currency codes by account id."""
+    with session_scope() as session:
+        accounts = session.scalars(select(Account)).all()
+    return {account.id: account.currency for account in accounts}
+
+
 def expense_breakdown(month: date) -> list[dict]:
-    """Return current month expenses by category."""
+    """Return current month expenses by category, converted to GBP."""
     with session_scope() as session:
         expenses = session.scalars(select(MonthlyExpense).where(MonthlyExpense.month == month)).all()
 
+    currencies = account_currencies()
     totals: dict[str, Decimal] = {}
     for expense in expenses:
-        totals[expense.category] = totals.get(expense.category, Decimal("0.00")) + expense.amount
+        amount = convert_to_gbp(expense.amount, currencies.get(expense.source_account_id, "GBP")).gbp_amount
+        totals[expense.category] = totals.get(expense.category, Decimal("0.00")) + amount
 
     return [{"category": category, "amount": money_float(amount)} for category, amount in sorted(totals.items())]
 
@@ -125,13 +139,15 @@ def debt_history() -> list[dict]:
 
 
 def spending_history() -> list[dict]:
-    """Return monthly total spending over time."""
+    """Return monthly total spending over time, converted to GBP."""
     with session_scope() as session:
         expenses = session.scalars(select(MonthlyExpense)).all()
 
+    currencies = account_currencies()
     totals: dict[date, Decimal] = {}
     for expense in expenses:
-        totals[expense.month] = totals.get(expense.month, Decimal("0.00")) + expense.amount
+        amount = convert_to_gbp(expense.amount, currencies.get(expense.source_account_id, "GBP")).gbp_amount
+        totals[expense.month] = totals.get(expense.month, Decimal("0.00")) + amount
 
     return [
         {"month": month.isoformat(), "spending": money_float(amount)}
@@ -140,14 +156,16 @@ def spending_history() -> list[dict]:
 
 
 def spending_by_category_history() -> list[dict]:
-    """Return category spending over time."""
+    """Return category spending over time, converted to GBP."""
     with session_scope() as session:
         expenses = session.scalars(select(MonthlyExpense)).all()
 
+    currencies = account_currencies()
     totals: dict[tuple[date, str], Decimal] = {}
     for expense in expenses:
         key = (expense.month, expense.category)
-        totals[key] = totals.get(key, Decimal("0.00")) + expense.amount
+        amount = convert_to_gbp(expense.amount, currencies.get(expense.source_account_id, "GBP")).gbp_amount
+        totals[key] = totals.get(key, Decimal("0.00")) + amount
 
     return [
         {"month": month.isoformat(), "category": category, "amount": money_float(amount)}

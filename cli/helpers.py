@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.account_types import ACCOUNT_TYPE_LABELS, VALID_ACCOUNT_TYPES, account_type_label
+from src.currencies import CURRENCY_LABELS, SUPPORTED_CURRENCIES
 from src.models.account import Account
 
 
@@ -96,6 +97,30 @@ def ask_account_type(prompt: str = "Account type") -> str:
                 return value
 
         print("Please choose a listed number, label, or account type value.")
+
+
+def ask_currency(prompt: str = "Currency", default: str = "GBP") -> str:
+    """Ask for a supported account currency using readable labels."""
+    default = default.strip().upper() if default else "GBP"
+    choices = list(CURRENCY_LABELS.items())
+    print(f"{prompt}:")
+    for index, (code, label) in enumerate(choices, start=1):
+        default_marker = " [default]" if code == default else ""
+        print(f"{index}: {label}{default_marker}")
+
+    while True:
+        answer = input("Choose number or currency code: ").strip().upper()
+        if not answer:
+            return default
+        if answer.isdigit():
+            index = int(answer)
+            if 1 <= index <= len(choices):
+                return choices[index - 1][0]
+        if answer in SUPPORTED_CURRENCIES:
+            return answer
+
+        choices_text = ", ".join(sorted(SUPPORTED_CURRENCIES))
+        print(f"Please choose one of: {choices_text}.")
 
 
 def list_accounts(session: Session) -> list[Account]:

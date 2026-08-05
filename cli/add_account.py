@@ -14,13 +14,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.db import session_scope
 from src.models.account import Account
 from src.account_types import account_type_label
-from cli.helpers import ask_account_type, ask_yes_no
+from cli.helpers import ask_account_type, ask_currency, ask_yes_no
 
 
 def main() -> None:
     name = input("Account name: ").strip()
     account_type = ask_account_type()
-    currency = (input("Currency [GBP]: ") or "GBP").strip().upper()
+    currency = ask_currency(default="GBP")
 
     is_emergency_fund = ask_yes_no("Is this an emergency fund?")
     account = Account(

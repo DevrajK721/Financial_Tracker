@@ -152,6 +152,33 @@ Accounts are real places where money sits or debt exists.
 .venv/bin/python finance.py add account
 ```
 
+Supported account currencies:
+
+- `GBP` - British Pound
+- `USD` - US Dollar
+- `EUR` - Euro
+- `CNY` - Chinese Yuan
+- `JPY` - Japanese Yen
+- `INR` - Indian Rupee
+- `MYR` - Malaysian Ringgit
+
+Snapshots are stored in the account's native currency. Dashboard totals, net worth, debts, emergency-fund coverage, investment charts, and projections are converted into GBP using the latest available exchange rate.
+
+FX rates come from the no-key Frankfurter API and are cached locally in:
+
+```text
+data/runtime/fx_rates.json
+```
+
+If a fresh rate cannot be fetched, the app reuses the cached rate for that currency pair. If no cached rate exists yet, the app raises a clear FX error rather than silently pretending a foreign-currency amount is already GBP.
+
+For monthly income and expense entries, the amount is treated as being in the linked account's currency:
+
+- Income is converted using the target account currency.
+- Expenses are converted using the source account currency.
+- Investment transfer contributions/withdrawals are converted using the investment account currency.
+- GBP accounts are unaffected because their rate is always `1 GBP = £1`.
+
 Supported account types:
 
 ```text

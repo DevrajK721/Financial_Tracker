@@ -18,6 +18,7 @@ from src.models.monthly_expense import MonthlyExpense
 from src.models.monthly_goal_allocation import MonthlyGoalAllocation
 from src.models.monthly_income import MonthlyIncome
 from src.models.monthly_transfer import MonthlyTransfer
+from src.services.fx import convert_to_gbp
 from src.services.net_worth import calculate_net_worth
 from src.services.snapshot_balances import monthly_account_balances
 from src.services.spending_baseline import previous_months
@@ -38,13 +39,27 @@ def average_monthly_savings(month: date, lookback_months: int = 6) -> Decimal:
     with session_scope() as session:
         incomes = session.scalars(select(MonthlyIncome).where(MonthlyIncome.month.in_(months))).all()
         expenses = session.scalars(select(MonthlyExpense).where(MonthlyExpense.month.in_(months))).all()
+        accounts = session.scalars(select(Account)).all()
 
     months_with_data = {income.month for income in incomes} | {expense.month for expense in expenses}
     if not months_with_data:
         return Decimal("0.00")
 
-    total_income = sum((income.net_amount for income in incomes), Decimal("0.00"))
-    total_expenses = sum((expense.amount for expense in expenses), Decimal("0.00"))
+    currencies = {account.id: account.currency for account in accounts}
+    total_income = sum(
+        (
+            convert_to_gbp(income.net_amount, currencies.get(income.target_account_id, "GBP")).gbp_amount
+            for income in incomes
+        ),
+        Decimal("0.00"),
+    )
+    total_expenses = sum(
+        (
+            convert_to_gbp(expense.amount, currencies.get(expense.source_account_id, "GBP")).gbp_amount
+            for expense in expenses
+        ),
+        Decimal("0.00"),
+    )
     return (total_income - total_expenses) / Decimal(len(months_with_data))
 
 
@@ -89,10 +104,12 @@ def project_total_debt(month: date, months_forward: int = 12) -> list[dict[str, 
     """Project total debt using monthly interest and expected/minimum payments."""
     with session_scope() as session:
         profiles = session.scalars(select(DebtProfile)).all()
+        accounts = session.scalars(select(Account)).all()
 
     rows = [balance for balance in monthly_account_balances(month) if balance.is_debt]
     balances = {balance.account_id: balance.balance for balance in rows}
     profiles_by_account = {profile.account_id: profile for profile in profiles}
+    currencies = {account.id: account.currency for account in accounts}
     if not balances:
         return []
 
@@ -105,7 +122,10 @@ def project_total_debt(month: date, months_forward: int = 12) -> list[dict[str, 
             monthly_payment = Decimal("0.00")
             if profile is not None:
                 monthly_rate = (profile.interest_rate / Decimal("100")) / Decimal("12")
-                monthly_payment = profile.minimum_payment or Decimal("0.00")
+                monthly_payment = convert_to_gbp(
+                    profile.minimum_payment or Decimal("0.00"),
+                    currencies.get(profile.account_id, "GBP"),
+                ).gbp_amount
 
             next_balance = money_decimal(
                 max(Decimal("0.00"), (balance * (Decimal("1") + monthly_rate)) - monthly_payment)
@@ -129,23 +149,27 @@ def average_monthly_investment_performance(month: date, lookback_months: int = 6
         transfers = session.scalars(select(MonthlyTransfer).where(MonthlyTransfer.month.in_(months))).all()
 
     investment_account_ids = {account.id for account in accounts}
+    account_currencies = {account.id: account.currency for account in accounts}
     if not investment_account_ids:
         return Decimal("0.00")
 
     snapshot_map: dict[tuple[int, date], dict[str, Decimal]] = {}
     for snapshot in snapshots:
         if snapshot.account_id in investment_account_ids:
-            snapshot_map.setdefault((snapshot.account_id, snapshot.month), {})[snapshot.snapshot_type] = snapshot.balance
+            converted = convert_to_gbp(snapshot.balance, account_currencies[snapshot.account_id]).gbp_amount
+            snapshot_map.setdefault((snapshot.account_id, snapshot.month), {})[snapshot.snapshot_type] = converted
 
     transfer_in: dict[tuple[int, date], Decimal] = {}
     transfer_out: dict[tuple[int, date], Decimal] = {}
     for transfer in transfers:
         if transfer.to_account_id in investment_account_ids:
             key = (transfer.to_account_id, transfer.month)
-            transfer_in[key] = transfer_in.get(key, Decimal("0.00")) + transfer.amount
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.to_account_id]).gbp_amount
+            transfer_in[key] = transfer_in.get(key, Decimal("0.00")) + amount
         if transfer.from_account_id in investment_account_ids:
             key = (transfer.from_account_id, transfer.month)
-            transfer_out[key] = transfer_out.get(key, Decimal("0.00")) + transfer.amount
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.from_account_id]).gbp_amount
+            transfer_out[key] = transfer_out.get(key, Decimal("0.00")) + amount
 
     performance_values = []
     for key, account_snapshots in snapshot_map.items():
@@ -171,11 +195,17 @@ def project_goal_completion(month: date) -> dict[str, dict[str, Decimal | int]]:
         allocations = session.scalars(
             select(MonthlyGoalAllocation).where(MonthlyGoalAllocation.month == month)
         ).all()
+        accounts = session.scalars(select(Account)).all()
 
+    currencies = {account.id: account.currency for account in accounts}
     allocated_by_goal: dict[int, Decimal] = {}
     for allocation in allocations:
+        allocated_amount = convert_to_gbp(
+            allocation.allocated_amount,
+            currencies.get(allocation.account_id, "GBP"),
+        ).gbp_amount
         allocated_by_goal[allocation.goal_id] = (
-            allocated_by_goal.get(allocation.goal_id, Decimal("0.00")) + allocation.allocated_amount
+            allocated_by_goal.get(allocation.goal_id, Decimal("0.00")) + allocated_amount
         )
 
     result: dict[str, dict[str, Decimal | int]] = {}

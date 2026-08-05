@@ -9,7 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from cli.helpers import ask_account_id, ask_account_type, ask_yes_no
+from cli.helpers import ask_account_id, ask_account_type, ask_currency, ask_yes_no
 from src.db import session_scope
 from src.models.account import Account
 
@@ -27,14 +27,13 @@ def main() -> None:
 
         print("Leave a field blank to keep the current value.")
         name = input(f"Name [{account.name}]: ").strip()
-        currency = input(f"Currency [{account.currency}]: ").strip().upper()
 
         if ask_yes_no("Change account type?"):
             account.account_type = ask_account_type()
+        if ask_yes_no("Change currency?"):
+            account.currency = ask_currency(default=account.currency)
         if name:
             account.name = name
-        if currency:
-            account.currency = currency
 
         account.is_active = ask_yes_no("Is this account active?", default=account.is_active)
         account.is_emergency_fund = ask_yes_no(

@@ -14,6 +14,7 @@ from src.db import session_scope
 from src.models.account import Account
 from src.models.debt_profile import DebtProfile
 from src.models.monthly_account_snapshot import MonthlyAccountSnapshot
+from src.services.fx import convert_to_gbp
 
 
 @dataclass(frozen=True)
@@ -21,10 +22,14 @@ class MonthlyAccountBalance:
     account_id: int
     account_name: str
     account_type: str
+    currency: str
+    native_balance: Decimal
     balance: Decimal
     snapshot_type: str
     is_debt: bool
     is_emergency_fund: bool
+    fx_rate_to_gbp: Decimal
+    fx_rate_date: str
 
 
 def monthly_account_balances(month: date) -> list[MonthlyAccountBalance]:
@@ -57,14 +62,19 @@ def monthly_account_balances(month: date) -> list[MonthlyAccountBalance]:
             continue
 
         account_type = account.account_type.lower()
+        converted = convert_to_gbp(snapshot.balance, account.currency)
         preferred[account.id] = MonthlyAccountBalance(
             account_id=account.id,
             account_name=account.name,
             account_type=account.account_type,
-            balance=snapshot.balance,
+            currency=converted.native_currency,
+            native_balance=converted.native_amount,
+            balance=converted.gbp_amount,
             snapshot_type=snapshot.snapshot_type,
             is_debt=account_type == "debt" or account.id in debt_account_ids,
             is_emergency_fund=account.is_emergency_fund,
+            fx_rate_to_gbp=converted.rate_to_gbp,
+            fx_rate_date=converted.rate_date,
         )
 
     return sorted(preferred.values(), key=lambda balance: balance.account_name.lower())

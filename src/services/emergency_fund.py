@@ -9,7 +9,9 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from src.db import session_scope
+from src.models.account import Account
 from src.models.monthly_expense import MonthlyExpense
+from src.services.fx import convert_to_gbp
 from src.services.snapshot_balances import monthly_account_balances
 from src.services.spending_baseline import previous_months
 
@@ -32,12 +34,20 @@ def calculate_emergency_fund_details(month: date, lookback_months: int = 6) -> d
             .where(MonthlyExpense.month.in_(months))
             .where(MonthlyExpense.category.in_(CORE_EXPENSE_CATEGORIES))
         ).all()
+        accounts = session.scalars(select(Account)).all()
 
     emergency_fund_balance = sum(
         (balance.balance for balance in monthly_account_balances(month) if balance.is_emergency_fund),
         Decimal("0.00"),
     )
-    total_core_expenses = sum((expense.amount for expense in core_expenses), Decimal("0.00"))
+    currencies = {account.id: account.currency for account in accounts}
+    total_core_expenses = sum(
+        (
+            convert_to_gbp(expense.amount, currencies.get(expense.source_account_id, "GBP")).gbp_amount
+            for expense in core_expenses
+        ),
+        Decimal("0.00"),
+    )
     average_core_expenses = Decimal("0.00")
     if months:
         average_core_expenses = total_core_expenses / Decimal(len(months))

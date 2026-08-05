@@ -13,6 +13,7 @@ from src.db import session_scope
 from src.models.account import Account
 from src.models.monthly_account_snapshot import MonthlyAccountSnapshot
 from src.models.monthly_transfer import MonthlyTransfer
+from src.services.fx import convert_to_gbp, money_decimal
 from src.services.projections import add_months
 
 
@@ -34,6 +35,7 @@ def investment_account_history() -> list[dict[str, Decimal | str]]:
 
     account_names = {account.id: account.name for account in accounts}
     account_types = {account.id: account.account_type for account in accounts}
+    account_currencies = {account.id: account.currency for account in accounts}
     investment_account_ids = set(account_names)
 
     snapshot_map: dict[tuple[int, date], dict[str, Decimal]] = {}
@@ -42,7 +44,10 @@ def investment_account_history() -> list[dict[str, Decimal | str]]:
         if snapshot.account_id not in investment_account_ids:
             continue
         key = (snapshot.account_id, snapshot.month)
-        snapshot_map.setdefault(key, {})[snapshot.snapshot_type] = snapshot.balance
+        snapshot_map.setdefault(key, {})[snapshot.snapshot_type] = convert_to_gbp(
+            snapshot.balance,
+            account_currencies[snapshot.account_id],
+        ).gbp_amount
         months.add(snapshot.month)
 
     transfer_in: dict[tuple[int, date], Decimal] = {}
@@ -50,11 +55,13 @@ def investment_account_history() -> list[dict[str, Decimal | str]]:
     for transfer in transfers:
         if transfer.to_account_id in investment_account_ids:
             key = (transfer.to_account_id, transfer.month)
-            transfer_in[key] = transfer_in.get(key, Decimal("0.00")) + transfer.amount
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.to_account_id]).gbp_amount
+            transfer_in[key] = transfer_in.get(key, Decimal("0.00")) + amount
             months.add(transfer.month)
         if transfer.from_account_id in investment_account_ids:
             key = (transfer.from_account_id, transfer.month)
-            transfer_out[key] = transfer_out.get(key, Decimal("0.00")) + transfer.amount
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.from_account_id]).gbp_amount
+            transfer_out[key] = transfer_out.get(key, Decimal("0.00")) + amount
             months.add(transfer.month)
 
     rows: list[dict[str, Decimal | str]] = []
@@ -103,26 +110,29 @@ def investment_contribution_events() -> list[dict[str, Decimal | str]]:
         transfers = session.scalars(select(MonthlyTransfer).order_by(MonthlyTransfer.month)).all()
 
     account_names = {account.id: account.name for account in accounts}
+    account_currencies = {account.id: account.currency for account in accounts}
     investment_account_ids = set(account_names)
 
     events: list[dict[str, Decimal | str]] = []
     for transfer in transfers:
         if transfer.to_account_id in investment_account_ids:
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.to_account_id]).gbp_amount
             events.append(
                 {
                     "month": transfer.month.isoformat(),
                     "account": account_names[transfer.to_account_id],
-                    "amount": transfer.amount,
+                    "amount": amount,
                     "event_type": "Contribution",
                     "label": transfer.label or "Contribution",
                 }
             )
         if transfer.from_account_id in investment_account_ids:
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.from_account_id]).gbp_amount
             events.append(
                 {
                     "month": transfer.month.isoformat(),
                     "account": account_names[transfer.from_account_id],
-                    "amount": -transfer.amount,
+                    "amount": -amount,
                     "event_type": "Withdrawal",
                     "label": transfer.label or "Withdrawal",
                 }
@@ -168,8 +178,8 @@ def project_investment_balances(month: date, months_forward: int = 12, lookback_
         performance_only_balance = current_balance
         for index in range(1, months_forward + 1):
             projected_month = add_months(month, index)
-            projected_balance = projected_balance + average_performance + average_contribution
-            performance_only_balance = performance_only_balance + average_performance
+            projected_balance = money_decimal(projected_balance + average_performance + average_contribution)
+            performance_only_balance = money_decimal(performance_only_balance + average_performance)
             projections.append(
                 {
                     "month": projected_month.isoformat(),
@@ -197,17 +207,26 @@ def estimate_investment_growth(month: date) -> dict[str, Decimal]:
     snapshots: dict[int, dict[str, Decimal]] = {}
     account_names: dict[int, str] = {}
     account_types: dict[int, str] = {}
+    account_currencies: dict[int, str] = {}
 
     for snapshot, account in rows:
-        snapshots.setdefault(account.id, {})[snapshot.snapshot_type] = snapshot.balance
+        snapshots.setdefault(account.id, {})[snapshot.snapshot_type] = convert_to_gbp(
+            snapshot.balance,
+            account.currency,
+        ).gbp_amount
         account_names[account.id] = account.name
         account_types[account.id] = account.account_type.lower()
+        account_currencies[account.id] = account.currency
 
     transfer_in: dict[int, Decimal] = {}
     transfer_out: dict[int, Decimal] = {}
     for transfer in transfers:
-        transfer_in[transfer.to_account_id] = transfer_in.get(transfer.to_account_id, Decimal("0.00")) + transfer.amount
-        transfer_out[transfer.from_account_id] = transfer_out.get(transfer.from_account_id, Decimal("0.00")) + transfer.amount
+        if transfer.to_account_id in account_currencies:
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.to_account_id]).gbp_amount
+            transfer_in[transfer.to_account_id] = transfer_in.get(transfer.to_account_id, Decimal("0.00")) + amount
+        if transfer.from_account_id in account_currencies:
+            amount = convert_to_gbp(transfer.amount, account_currencies[transfer.from_account_id]).gbp_amount
+            transfer_out[transfer.from_account_id] = transfer_out.get(transfer.from_account_id, Decimal("0.00")) + amount
 
     growth: dict[str, Decimal] = {}
     for account_id, account_snapshots in snapshots.items():

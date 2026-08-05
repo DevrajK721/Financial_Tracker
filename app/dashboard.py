@@ -19,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.account_types import ACCOUNT_TYPE_LABELS
+from src.currencies import CURRENCY_LABELS
 from src.db import session_scope
 from src.models.account import Account
 from src.models.debt_profile import DebtProfile
@@ -142,6 +143,10 @@ def money(value: Decimal | float | int) -> str:
     return f"£{float(value):,.2f}"
 
 
+def currency_money(value: Decimal | float | int, currency: str) -> str:
+    return f"{currency} {float(value):,.2f}"
+
+
 def percent(value: Decimal | float | int) -> str:
     return f"{float(value) * 100:,.1f}%"
 
@@ -171,6 +176,14 @@ def ensure_balance_columns(balances: pd.DataFrame) -> pd.DataFrame:
     """Keep balance rendering stable if Streamlit has stale in-memory rows."""
     if "type" not in balances.columns:
         balances["type"] = ""
+    if "currency" not in balances.columns:
+        balances["currency"] = "GBP"
+    if "native_balance" not in balances.columns:
+        balances["native_balance"] = balances.get("balance", 0)
+    if "fx_rate_to_gbp" not in balances.columns:
+        balances["fx_rate_to_gbp"] = 1
+    if "fx_rate_date" not in balances.columns:
+        balances["fx_rate_date"] = ""
     if "snapshot_type" not in balances.columns:
         balances["snapshot_type"] = "end"
     if "is_debt" not in balances.columns:
@@ -1015,7 +1028,16 @@ def render_balances(month: date) -> None:
         lambda row: "Debt Account" if row["is_debt"] else display_label(row["type"], ACCOUNT_TYPE_LABELS),
         axis=1,
     )
-    balances["Balance"] = balances["balance"].apply(money)
+    balances["Native Balance"] = balances.apply(
+        lambda row: currency_money(row["native_balance"], row["currency"]),
+        axis=1,
+    )
+    balances["Balance (GBP)"] = balances["balance"].apply(money)
+    balances["FX Rate"] = balances.apply(
+        lambda row: f"1 {row['currency']} = £{float(row['fx_rate_to_gbp']):,.4f}",
+        axis=1,
+    )
+    balances["FX Date"] = balances["fx_rate_date"]
     balances["Snapshot Used"] = balances["snapshot_type"].apply(lambda value: display_label(value, SNAPSHOT_TYPE_LABELS))
     balances["Emergency Fund"] = balances["is_emergency_fund"].map({True: "Yes", False: "No"})
 
@@ -1035,7 +1057,18 @@ def render_balances(month: date) -> None:
     graph_grid([balance_bar, balance_pie])
 
     static_table(
-        balances[["Account", "Account Type", "Balance", "Snapshot Used", "Emergency Fund"]],
+        balances[
+            [
+                "Account",
+                "Account Type",
+                "Native Balance",
+                "Balance (GBP)",
+                "FX Rate",
+                "FX Date",
+                "Snapshot Used",
+                "Emergency Fund",
+            ]
+        ],
     )
 
 
@@ -1463,12 +1496,30 @@ def render_raw(month: date, summary: dict) -> None:
             lambda row: "Debt Account" if row["is_debt"] else display_label(row["type"], ACCOUNT_TYPE_LABELS),
             axis=1,
         )
-        balances["Balance"] = balances["balance"].apply(money)
+        balances["Native Balance"] = balances.apply(
+            lambda row: currency_money(row["native_balance"], row["currency"]),
+            axis=1,
+        )
+        balances["Balance (GBP)"] = balances["balance"].apply(money)
+        balances["FX Rate"] = balances.apply(
+            lambda row: f"1 {row['currency']} = £{float(row['fx_rate_to_gbp']):,.4f}",
+            axis=1,
+        )
+        balances["FX Date"] = balances["fx_rate_date"]
         balances["Snapshot Used"] = balances["snapshot_type"].apply(lambda value: display_label(value, SNAPSHOT_TYPE_LABELS))
         balances["Emergency Fund"] = balances["is_emergency_fund"].map({True: "Yes", False: "No"})
         static_table(
             balances.rename(columns={"account": "Account"})[
-                ["Account", "Account Type", "Balance", "Snapshot Used", "Emergency Fund"]
+                [
+                    "Account",
+                    "Account Type",
+                    "Native Balance",
+                    "Balance (GBP)",
+                    "FX Rate",
+                    "FX Date",
+                    "Snapshot Used",
+                    "Emergency Fund",
+                ]
             ],
         )
     if not expenses.empty:
@@ -1497,7 +1548,7 @@ def render_add_entries(default_month: date) -> None:
         with st.form("add_account_form"):
             name = st.text_input("Account name")
             account_type = select_from_labels("Account type", ACCOUNT_TYPE_LABELS, key="add_account_type")
-            currency = st.text_input("Currency", value="GBP", max_chars=3)
+            currency = select_from_labels("Currency", CURRENCY_LABELS, current_value="GBP", key="add_account_currency")
             is_emergency_fund = st.checkbox("Emergency fund account")
             submitted = st.form_submit_button("Add account")
             if submitted:
@@ -1508,7 +1559,7 @@ def render_add_entries(default_month: date) -> None:
                         Account(
                             name=name.strip(),
                             account_type=account_type,
-                            currency=currency.strip().upper() or "GBP",
+                            currency=currency,
                             is_emergency_fund=is_emergency_fund,
                         )
                     )
@@ -1862,7 +1913,12 @@ def render_edit_account() -> None:
             current_value=account.account_type,
             key=f"edit_account_type_{account_id}",
         )
-        currency = st.text_input("Currency", value=account.currency, max_chars=3, key=f"edit_account_currency_{account_id}")
+        currency = select_from_labels(
+            "Currency",
+            CURRENCY_LABELS,
+            current_value=account.currency.upper(),
+            key=f"edit_account_currency_{account_id}",
+        )
         is_active = st.checkbox("Active", value=account.is_active, key=f"edit_account_active_{account_id}")
         is_emergency_fund = st.checkbox(
             "Emergency fund",
@@ -1879,7 +1935,7 @@ def render_edit_account() -> None:
                 else:
                     record.name = name.strip()
                     record.account_type = account_type
-                    record.currency = currency.strip().upper() or "GBP"
+                    record.currency = currency
                     record.is_active = is_active
                     record.is_emergency_fund = is_emergency_fund
                     account_updated = True

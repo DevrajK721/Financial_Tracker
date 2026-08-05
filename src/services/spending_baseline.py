@@ -10,7 +10,9 @@ from statistics import median
 from sqlalchemy import select
 
 from src.db import session_scope
+from src.models.account import Account
 from src.models.monthly_expense import MonthlyExpense
+from src.services.fx import convert_to_gbp
 
 
 def previous_months(month: date, count: int = 6) -> list[date]:
@@ -40,14 +42,18 @@ def compare_spending_to_baseline(month: date, lookback_months: int = 6) -> dict[
         baseline_expenses = session.scalars(
             select(MonthlyExpense).where(MonthlyExpense.month.in_(baseline_months))
         ).all()
+        accounts = session.scalars(select(Account)).all()
 
+    currencies = {account.id: account.currency for account in accounts}
     current_by_category: dict[str, Decimal] = {}
     for expense in current_expenses:
-        current_by_category[expense.category] = current_by_category.get(expense.category, Decimal("0.00")) + expense.amount
+        amount = convert_to_gbp(expense.amount, currencies.get(expense.source_account_id, "GBP")).gbp_amount
+        current_by_category[expense.category] = current_by_category.get(expense.category, Decimal("0.00")) + amount
 
     baseline_values: dict[str, list[Decimal]] = {}
     for expense in baseline_expenses:
-        baseline_values.setdefault(expense.category, []).append(expense.amount)
+        amount = convert_to_gbp(expense.amount, currencies.get(expense.source_account_id, "GBP")).gbp_amount
+        baseline_values.setdefault(expense.category, []).append(amount)
 
     categories = set(current_by_category) | set(baseline_values)
     comparison: dict[str, dict[str, Decimal]] = {}
