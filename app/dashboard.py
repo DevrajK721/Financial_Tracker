@@ -10,7 +10,6 @@ from datetime import date
 from decimal import Decimal
 from html import escape
 from pathlib import Path
-from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -503,9 +502,29 @@ def static_bar_chart(
     color: str = "#ff6b6b",
 ) -> None:
     """Render a simple static horizontal bar chart."""
+    st.markdown(
+        bar_chart_html(
+            data,
+            label_column=label_column,
+            value_column=value_column,
+            title=title,
+            color=color,
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def bar_chart_html(
+    data: pd.DataFrame,
+    *,
+    label_column: str,
+    value_column: str,
+    title: str,
+    color: str = "#ff6b6b",
+) -> str:
+    """Return a simple static horizontal bar chart."""
     if data.empty:
-        st.caption("No chart data to show.")
-        return
+        return "<p>No chart data to show.</p>"
 
     chart = data[[label_column, value_column]].copy()
     chart[value_column] = pd.to_numeric(chart[value_column], errors="coerce").fillna(0)
@@ -525,11 +544,77 @@ def static_bar_chart(
             "</div></div>"
         )
 
-    st.markdown(
+    return (
         "<div style='background:#101016; border:1px solid #35323c; border-radius:12px; padding:1rem; margin:0.75rem 0;'>"
         f"<h4 style='margin:0 0 0.8rem; color:#f7f1f1;'>{escape(title)}</h4>"
-        f"{''.join(bars)}</div>",
+        f"{''.join(bars)}</div>"
+    )
+
+
+def graph_grid(charts: list[str]) -> None:
+    """Render graph cards in a responsive two-column grid."""
+    if not charts:
+        st.caption("No charts to show.")
+        return
+
+    cards = "".join(f"<div class='graph-card'>{chart}</div>" for chart in charts)
+    st.markdown(
+        "<div class='graph-grid'>"
+        f"{cards}"
+        "</div>"
+        "<style>"
+        ".graph-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:1rem; margin:0.75rem 0 1rem; }"
+        ".graph-card { min-width:0; }"
+        "@media (max-width: 900px) { .graph-grid { grid-template-columns: 1fr; } }"
+        "</style>",
         unsafe_allow_html=True,
+    )
+
+
+def pie_chart_html(
+    data: pd.DataFrame,
+    *,
+    label_column: str,
+    value_column: str,
+    title: str,
+) -> str:
+    """Return a static CSS pie chart with legend."""
+    if data.empty:
+        return "<p>No chart data to show.</p>"
+
+    chart = data[[label_column, value_column]].copy()
+    chart[value_column] = pd.to_numeric(chart[value_column], errors="coerce").fillna(0)
+    chart = chart[chart[value_column] > 0]
+    if chart.empty:
+        return "<p>No positive values to show.</p>"
+
+    colors = ["#ff6b6b", "#f2c875", "#8fb8ff", "#c68cff", "#f08ab8", "#a9a1b8", "#ff8a8a"]
+    total = float(chart[value_column].sum())
+    start = 0.0
+    slices = []
+    legend = []
+    for index, row in enumerate(chart.to_dict("records")):
+        value = float(row[value_column])
+        end = start + (value / total * 100)
+        color = colors[index % len(colors)]
+        slices.append(f"{color} {start:.4f}% {end:.4f}%")
+        legend.append(
+            "<div style='display:flex; align-items:center; justify-content:space-between; gap:0.75rem; margin:0.35rem 0;'>"
+            "<span style='display:flex; align-items:center; gap:0.5rem;'>"
+            f"<span style='width:0.75rem; height:0.75rem; border-radius:999px; background:{color}; display:inline-block;'></span>"
+            f"<span>{escape(str(row[label_column]))}</span></span>"
+            f"<strong>{money(value)}</strong></div>"
+        )
+        start = end
+
+    return (
+        "<div style='background:#101016; border:1px solid #35323c; border-radius:12px; padding:1rem; height:100%;'>"
+        f"<h4 style='margin:0 0 0.8rem; color:#f7f1f1;'>{escape(title)}</h4>"
+        "<div style='display:grid; grid-template-columns: minmax(140px, 0.8fr) minmax(180px, 1.2fr); gap:1rem; align-items:center;'>"
+        f"<div style='aspect-ratio:1; border-radius:50%; background:conic-gradient({', '.join(slices)}); "
+        "border:1px solid #35323c; box-shadow: inset 0 0 0 34px #101016;'></div>"
+        f"<div style='color:#d8d0d2; font-size:0.9rem;'>{''.join(legend)}</div>"
+        "</div></div>"
     )
 
 
@@ -546,6 +631,21 @@ def static_line_chart(
         columns={x_column: "month", y_column: "value", series_column: "Series"}
     )
     st.markdown(investment_svg_chart(chart_data, pd.DataFrame(), title), unsafe_allow_html=True)
+
+
+def line_chart_html(
+    data: pd.DataFrame,
+    *,
+    x_column: str,
+    y_column: str,
+    series_column: str,
+    title: str,
+) -> str:
+    """Return static SVG line chart HTML for use in graph grids."""
+    chart_data = data[[x_column, y_column, series_column]].rename(
+        columns={x_column: "month", y_column: "value", series_column: "Series"}
+    )
+    return investment_svg_chart(chart_data, pd.DataFrame(), title)
 
 
 def investment_svg_chart(chart_data: pd.DataFrame, markers: pd.DataFrame, title: str) -> str:
@@ -607,7 +707,7 @@ def investment_svg_chart(chart_data: pd.DataFrame, markers: pd.DataFrame, title:
     elements = [
         "<div style='width:100%; overflow-x:auto;'>",
         f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='{escape(title)}' "
-        "style='width:100%; min-width:680px; background:#101016; border:1px solid #35323c; border-radius:12px;'>",
+        "style='width:100%; min-width:360px; background:#101016; border:1px solid #35323c; border-radius:12px;'>",
         f"<text x='{left}' y='26' fill='#f7f1f1' font-size='17' font-weight='700'>{escape(title)}</text>",
         f"<line x1='{left}' y1='{top + plot_height}' x2='{left + plot_width}' y2='{top + plot_height}' stroke='#35323c' />",
         f"<line x1='{left}' y1='{top}' x2='{left}' y2='{top + plot_height}' stroke='#35323c' />",
@@ -883,20 +983,20 @@ def render_balances(month: date) -> None:
     balances["Snapshot Used"] = balances["snapshot_type"].apply(lambda value: display_label(value, SNAPSHOT_TYPE_LABELS))
     balances["Emergency Fund"] = balances["is_emergency_fund"].map({True: "Yes", False: "No"})
 
-    static_bar_chart(
+    balance_bar = bar_chart_html(
         balances,
         label_column="Account",
         value_column="signed_balance",
         title="Balances by Account",
     )
     by_type = balances.groupby("Account Type", as_index=False)["balance"].sum()
-    static_bar_chart(
+    balance_pie = pie_chart_html(
         by_type,
         label_column="Account Type",
         value_column="balance",
         title="Balance Mix",
-        color="#f2c875",
     )
+    graph_grid([balance_bar, balance_pie])
 
     static_table(
         balances[["Account", "Account Type", "Balance", "Snapshot Used", "Emergency Fund"]],
@@ -914,14 +1014,17 @@ def render_statistics(summary: dict) -> None:
         for column in ["net_worth", "assets", "debts"]:
             net_worth[column] = pd.to_numeric(net_worth[column], errors="coerce")
 
+        charts = []
         actual_net_worth = net_worth[["month", "net_worth"]].copy()
         actual_net_worth["Series"] = "Actual Net Worth"
-        static_line_chart(
-            actual_net_worth,
-            x_column="month",
-            y_column="net_worth",
-            series_column="Series",
-            title="Actual Net Worth",
+        charts.append(
+            line_chart_html(
+                actual_net_worth,
+                x_column="month",
+                y_column="net_worth",
+                series_column="Series",
+                title="Actual Net Worth",
+            )
         )
 
         if not projection.empty:
@@ -941,25 +1044,30 @@ def render_statistics(summary: dict) -> None:
             projection_actual["Series"] = "Actual Net Worth"
             projection_future = projection_chart.rename(columns={"projected_net_worth": "value"})
             projection_future["Series"] = "Projected Net Worth"
-            static_line_chart(
-                pd.concat([projection_actual, projection_future], ignore_index=True),
-                x_column="month",
-                y_column="value",
-                series_column="Series",
-                title="Net Worth Projection",
+            charts.append(
+                line_chart_html(
+                    pd.concat([projection_actual, projection_future], ignore_index=True),
+                    x_column="month",
+                    y_column="value",
+                    series_column="Series",
+                    title="Net Worth Projection",
+                )
             )
 
         assets = net_worth[["month", "assets"]].rename(columns={"assets": "value"})
         assets["Series"] = "Assets"
         debts = net_worth[["month", "debts"]].rename(columns={"debts": "value"})
         debts["Series"] = "Debts"
-        static_line_chart(
-            pd.concat([assets, debts], ignore_index=True),
-            x_column="month",
-            y_column="value",
-            series_column="Series",
-            title="Assets and Debts Over Time",
+        charts.append(
+            line_chart_html(
+                pd.concat([assets, debts], ignore_index=True),
+                x_column="month",
+                y_column="value",
+                series_column="Series",
+                title="Assets and Debts Over Time",
+            )
         )
+        graph_grid(charts)
     else:
         st.info("Add end-of-month snapshots to build net worth history.")
 
@@ -1066,107 +1174,59 @@ def render_investments(month: date) -> None:
         )
 
     account_names = sorted(history["account"].unique())
-    selected_account = query_param("investment")
-    if selected_account not in account_names:
-        selected_account = account_names[0]
-    account_links = "".join(
-        (
-            f"<a class='subnav-pill {'active' if account == selected_account else ''}' "
-            f"href='?page=investments&month={month.strftime('%Y-%m')}&investment={quote(account)}' target='_self'>"
-            f"{escape(account)}</a>"
-        )
-        for account in account_names
-    )
-    st.caption("Choose an account to view its chart. Rendering one account at a time keeps this page stable.")
-    st.markdown(f"<div class='subnav-row'>{account_links}</div>", unsafe_allow_html=True)
-
-    for account in [selected_account]:
+    investment_charts = []
+    for account in account_names:
         account_history = history[history["account"] == account].sort_values("month").copy()
         account_type = str(account_history["Account Type"].dropna().iloc[-1])
-        balance_values = account_history["current_balance"].dropna()
-        current_balance = balance_values.iloc[-1] if not balance_values.empty else 0
-        current_contributions = account_history.loc[
-            account_history["month"] == month.isoformat(),
-            "net_contributions",
-        ].sum()
-        current_performance = account_history.loc[
-            account_history["month"] == month.isoformat(),
-            "performance_growth",
-        ].fillna(0).sum()
 
-        with st.container(border=True):
-            st.markdown(f"### {account}")
-            st.caption(account_type)
-            card_col1, card_col2, card_col3 = st.columns(3)
-            card_col1.metric("Current Balance", money(current_balance))
-            card_col2.metric("Net Contributions This Month", money(current_contributions))
-            card_col3.metric("Performance / Interest This Month", money(current_performance))
+        actual_chart_rows = account_history[["month", "current_balance"]].rename(
+            columns={"current_balance": "value"}
+        )
+        actual_chart_rows["Series"] = "Balance"
+        chart_rows = [actual_chart_rows]
 
-            actual_chart_rows = account_history[["month", "current_balance"]].rename(
-                columns={"current_balance": "value"}
+        account_projection = pd.DataFrame()
+        if not projection.empty:
+            account_projection = projection[projection["account"] == account].copy()
+        if not account_projection.empty:
+            latest_actual = account_history.tail(1)[["month", "current_balance"]].rename(
+                columns={"current_balance": "projected_balance"}
             )
-            actual_chart_rows["Series"] = "Balance"
-            chart_rows = [actual_chart_rows]
+            projected_with_contributions = pd.concat(
+                [latest_actual, account_projection[["month", "projected_balance"]]],
+                ignore_index=True,
+            ).rename(
+                columns={"projected_balance": "value"}
+            )
+            projected_with_contributions["Series"] = "Projected incl. regular contributions"
+            projected_performance_only = pd.concat(
+                [
+                    latest_actual.rename(columns={"projected_balance": "performance_only_balance"}),
+                    account_projection[["month", "performance_only_balance"]],
+                ],
+                ignore_index=True,
+            ).rename(
+                columns={"performance_only_balance": "value"}
+            )
+            projected_performance_only["Series"] = "Projected performance only"
+            chart_rows.extend([projected_with_contributions, projected_performance_only])
 
-            account_projection = pd.DataFrame()
-            if not projection.empty:
-                account_projection = projection[projection["account"] == account].copy()
-            if not account_projection.empty:
-                latest_actual = account_history.tail(1)[["month", "current_balance"]].rename(
-                    columns={"current_balance": "projected_balance"}
-                )
-                projected_with_contributions = pd.concat(
-                    [latest_actual, account_projection[["month", "projected_balance"]]],
-                    ignore_index=True,
-                ).rename(
-                    columns={"projected_balance": "value"}
-                )
-                projected_with_contributions["Series"] = "Projected incl. regular contributions"
-                projected_performance_only = pd.concat(
-                    [
-                        latest_actual.rename(columns={"projected_balance": "performance_only_balance"}),
-                        account_projection[["month", "performance_only_balance"]],
-                    ],
-                    ignore_index=True,
-                ).rename(
-                    columns={"performance_only_balance": "value"}
-                )
-                projected_performance_only["Series"] = "Projected performance only"
-                chart_rows.extend([projected_with_contributions, projected_performance_only])
-
-            account_chart_data = pd.concat(chart_rows, ignore_index=True)
-            contribution_markers = account_history[account_history["has_contribution"].astype(bool)].copy()
-
-            if not contribution_markers.empty:
-                contribution_markers["marker_label"] = contribution_markers["net_contributions"].apply(
-                    lambda value: f"Net contribution: {money(value)}"
-                )
-
-            st.markdown(
-                investment_svg_chart(
-                    account_chart_data,
-                    contribution_markers,
-                    f"{account} Balance and Projection",
-                ),
-                unsafe_allow_html=True,
+        account_chart_data = pd.concat(chart_rows, ignore_index=True)
+        contribution_markers = account_history[account_history["has_contribution"].astype(bool)].copy()
+        if not contribution_markers.empty:
+            contribution_markers["marker_label"] = contribution_markers["net_contributions"].apply(
+                lambda value: f"Net contribution: {money(value)}"
             )
 
-            account_events = pd.DataFrame()
-            if not contribution_events.empty:
-                account_events = contribution_events[contribution_events["account"] == account].copy()
-            if not account_events.empty:
-                account_events["Amount"] = account_events["amount"].apply(money)
-                account_events = account_events.rename(
-                    columns={
-                        "month": "Month",
-                        "event_type": "Event",
-                        "label": "Label",
-                    }
-                )
-                st.caption("Contribution and withdrawal events")
-                static_table(
-                    account_events[["Month", "Event", "Amount", "Label"]],
-                )
+        investment_charts.append(
+            investment_svg_chart(
+                account_chart_data,
+                contribution_markers,
+                f"{account} - {account_type}",
+            )
+        )
+
+    graph_grid(investment_charts)
 
     display_rows = history.rename(
         columns={
