@@ -187,11 +187,10 @@ Use the `📊 Investments` dashboard page for Trading Accounts, Cash ISAs, Lifet
 The investment page shows:
 
 - current balance for each investment-style account
-- balance history over time
-- projected balance growth for each account
+- separate balance and projection charts for each account
 - a separate performance-only projection
 - contribution and withdrawal markers on the chart
-- monthly split between contributions and performance/interest
+- records showing the split between contributions and performance/interest
 
 To get the cleanest investment tracking:
 
@@ -449,8 +448,8 @@ The dashboard is organised with a modern top menu:
 
 - `✍️ Entries`: add, edit, and delete finance records directly in the app.
 - `🏦 Balances`: account balances and balance mix.
-- `📈 Statistics`: net worth growth, assets, debts, and projected net worth.
-- `📊 Investments`: trading, ISA, savings, and pension balances with contribution markers and projections.
+- `📈 Statistics`: actual net worth, net worth projection, and assets/debts over time.
+- `📊 Investments`: separate trading, ISA, savings, and pension charts with contribution markers and projections.
 - `🥧 Spending`: spending pie chart, previous-month comparison, total spending, and category trends.
 - `📉 Debts`: debt totals, actual debt growth, projected debt growth, debt mix, and payoff estimates.
 - `🎯 Goals`: goal funding and subscriptions.

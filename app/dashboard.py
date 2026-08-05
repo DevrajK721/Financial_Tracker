@@ -704,18 +704,63 @@ def render_statistics(summary: dict) -> None:
     net_worth = pd.DataFrame(net_worth_history())
     projection = pd.DataFrame(summary["net_worth_projection"])
 
+    st.metric("Average Monthly Savings", money(summary["average_monthly_savings"]))
+
     if not net_worth.empty:
-        fig = go.Figure()
-        fig.add_trace(
+        for column in ["net_worth", "assets", "debts"]:
+            net_worth[column] = pd.to_numeric(net_worth[column], errors="coerce")
+
+        net_worth_fig = go.Figure()
+        net_worth_fig.add_trace(
             go.Scatter(
                 x=net_worth["month"],
                 y=net_worth["net_worth"],
                 mode="lines+markers",
-                name="Net Worth",
+                name="Actual Net Worth",
                 line=dict(color="#ff6b6b", width=3),
             )
         )
-        fig.add_trace(
+        net_worth_fig.update_layout(title="Actual Net Worth")
+        st.plotly_chart(chart_theme(net_worth_fig), width="stretch")
+
+        if not projection.empty:
+            projection["projected_net_worth"] = pd.to_numeric(
+                projection["projected_net_worth"],
+                errors="coerce",
+            )
+            latest_actual = net_worth.sort_values("month").tail(1)
+            projection_chart = pd.concat(
+                [
+                    latest_actual[["month", "net_worth"]].rename(columns={"net_worth": "projected_net_worth"}),
+                    projection[["month", "projected_net_worth"]],
+                ],
+                ignore_index=True,
+            )
+
+            projection_fig = go.Figure()
+            projection_fig.add_trace(
+                go.Scatter(
+                    x=net_worth["month"],
+                    y=net_worth["net_worth"],
+                    mode="lines+markers",
+                    name="Actual Net Worth",
+                    line=dict(color="#ff6b6b", width=3),
+                )
+            )
+            projection_fig.add_trace(
+                go.Scatter(
+                    x=projection_chart["month"],
+                    y=projection_chart["projected_net_worth"],
+                    mode="lines+markers",
+                    name="Projected Net Worth",
+                    line=dict(color="#f2c875", width=3, dash="dash"),
+                )
+            )
+            projection_fig.update_layout(title="Net Worth Projection")
+            st.plotly_chart(chart_theme(projection_fig), width="stretch")
+
+        balance_fig = go.Figure()
+        balance_fig.add_trace(
             go.Scatter(
                 x=net_worth["month"],
                 y=net_worth["assets"],
@@ -724,7 +769,7 @@ def render_statistics(summary: dict) -> None:
                 line=dict(color="#8fb8ff", width=2),
             )
         )
-        fig.add_trace(
+        balance_fig.add_trace(
             go.Scatter(
                 x=net_worth["month"],
                 y=net_worth["debts"],
@@ -733,22 +778,10 @@ def render_statistics(summary: dict) -> None:
                 line=dict(color="#ff8a8a", width=2),
             )
         )
-        if not projection.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=projection["month"],
-                    y=projection["projected_net_worth"].astype(float),
-                    mode="lines+markers",
-                    name="Projected Net Worth",
-                    line=dict(color="#f2c875", width=3, dash="dash"),
-                )
-            )
-        fig.update_layout(title="Net Worth Growth with Projection")
-        st.plotly_chart(chart_theme(fig), width="stretch")
+        balance_fig.update_layout(title="Assets and Debts Over Time")
+        st.plotly_chart(chart_theme(balance_fig), width="stretch")
     else:
         st.info("Add end-of-month snapshots to build net worth history.")
-
-    st.metric("Average Monthly Savings", money(summary["average_monthly_savings"]))
 
 
 def render_spending(month: date, summary: dict) -> None:
@@ -854,78 +887,120 @@ def render_investments(month: date) -> None:
         col2.metric("Net Contributions This Month", money(total_net_contributions))
         col3.metric("Performance / Interest This Month", money(total_performance))
 
-    fig = go.Figure()
-    for account in sorted(history["account"].unique()):
-        account_history = history[history["account"] == account]
-        fig.add_trace(
-            go.Scatter(
-                x=account_history["month"],
-                y=account_history["current_balance"],
-                mode="lines+markers",
-                name=f"{account} balance",
-                line=dict(width=3),
-            )
-        )
-
     if not projection.empty:
         projection["projected_balance"] = pd.to_numeric(projection["projected_balance"], errors="coerce")
         projection["performance_only_balance"] = pd.to_numeric(
             projection["performance_only_balance"],
             errors="coerce",
         )
-        for account in sorted(projection["account"].unique()):
-            account_projection = projection[projection["account"] == account]
-            fig.add_trace(
+
+    for account in sorted(history["account"].unique()):
+        account_history = history[history["account"] == account].sort_values("month").copy()
+        account_type = str(account_history["Account Type"].dropna().iloc[-1])
+        current_balance = account_history["current_balance"].dropna().iloc[-1]
+        current_contributions = account_history.loc[
+            account_history["month"] == month.isoformat(),
+            "net_contributions",
+        ].sum()
+        current_performance = account_history.loc[
+            account_history["month"] == month.isoformat(),
+            "performance_growth",
+        ].fillna(0).sum()
+
+        with st.container(border=True):
+            st.markdown(f"### {account}")
+            st.caption(account_type)
+            card_col1, card_col2, card_col3 = st.columns(3)
+            card_col1.metric("Current Balance", money(current_balance))
+            card_col2.metric("Net Contributions This Month", money(current_contributions))
+            card_col3.metric("Performance / Interest This Month", money(current_performance))
+
+            account_fig = go.Figure()
+            account_fig.add_trace(
                 go.Scatter(
-                    x=account_projection["month"],
-                    y=account_projection["projected_balance"],
-                    mode="lines",
-                    name=f"{account} projected incl. regular contributions",
-                    line=dict(width=2, dash="dash"),
+                    x=account_history["month"],
+                    y=account_history["current_balance"],
+                    mode="lines+markers",
+                    name="Balance",
+                    line=dict(color="#ff6b6b", width=3),
                 )
             )
-            fig.add_trace(
-                go.Scatter(
-                    x=account_projection["month"],
-                    y=account_projection["performance_only_balance"],
-                    mode="lines",
-                    name=f"{account} projected performance only",
-                    line=dict(width=2, dash="dot"),
+
+            account_projection = pd.DataFrame()
+            if not projection.empty:
+                account_projection = projection[projection["account"] == account].copy()
+            if not account_projection.empty:
+                latest_actual = account_history.tail(1)[["month", "current_balance"]].rename(
+                    columns={"current_balance": "projected_balance"}
                 )
-            )
+                projected_with_contributions = pd.concat(
+                    [latest_actual, account_projection[["month", "projected_balance"]]],
+                    ignore_index=True,
+                )
+                projected_performance_only = pd.concat(
+                    [
+                        latest_actual.rename(columns={"projected_balance": "performance_only_balance"}),
+                        account_projection[["month", "performance_only_balance"]],
+                    ],
+                    ignore_index=True,
+                )
+                account_fig.add_trace(
+                    go.Scatter(
+                        x=projected_with_contributions["month"],
+                        y=projected_with_contributions["projected_balance"],
+                        mode="lines",
+                        name="Projected incl. regular contributions",
+                        line=dict(color="#f2c875", width=2, dash="dash"),
+                    )
+                )
+                account_fig.add_trace(
+                    go.Scatter(
+                        x=projected_performance_only["month"],
+                        y=projected_performance_only["performance_only_balance"],
+                        mode="lines",
+                        name="Projected performance only",
+                        line=dict(color="#8fb8ff", width=2, dash="dot"),
+                    )
+                )
 
-    contribution_markers = history[history["has_contribution"].astype(bool)].copy()
-    if not contribution_markers.empty:
-        contribution_markers["marker_label"] = contribution_markers["net_contributions"].apply(
-            lambda value: f"Net contribution: {money(value)}"
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=contribution_markers["month"],
-                y=contribution_markers["current_balance"],
-                mode="markers",
-                name="Contribution / withdrawal month",
-                marker=dict(symbol="diamond", size=13, color="#f2c875", line=dict(color="#08080a", width=1)),
-                text=contribution_markers["account"] + "<br>" + contribution_markers["marker_label"],
-                hovertemplate="%{text}<br>Balance: £%{y:,.2f}<extra></extra>",
-            )
-        )
+            contribution_markers = account_history[account_history["has_contribution"].astype(bool)].copy()
+            if not contribution_markers.empty:
+                contribution_markers["marker_label"] = contribution_markers["net_contributions"].apply(
+                    lambda value: f"Net contribution: {money(value)}"
+                )
+                account_fig.add_trace(
+                    go.Scatter(
+                        x=contribution_markers["month"],
+                        y=contribution_markers["current_balance"],
+                        mode="markers",
+                        name="Contribution / withdrawal month",
+                        marker=dict(symbol="diamond", size=13, color="#f2c875", line=dict(color="#08080a", width=1)),
+                        text=contribution_markers["marker_label"],
+                        hovertemplate="%{text}<br>Balance: £%{y:,.2f}<extra></extra>",
+                    )
+                )
 
-    fig.update_layout(title="Investment Balances, Contributions, and Projections")
-    st.plotly_chart(chart_theme(fig), width="stretch")
+            account_fig.update_layout(title=f"{account} Balance and Projection")
+            st.plotly_chart(chart_theme(account_fig), width="stretch")
 
-    monthly_split = history.copy()
-    monthly_split["Performance / Interest"] = monthly_split["performance_growth"]
-    monthly_split["Net Contributions"] = monthly_split["net_contributions"]
-    split_chart = px.bar(
-        monthly_split,
-        x="month",
-        y=["Performance / Interest", "Net Contributions"],
-        color_discrete_sequence=["#8fb8ff", "#f2c875"],
-        facet_row="account",
-        title="Monthly Change Split: Performance vs Contributions",
-    )
-    st.plotly_chart(chart_theme(split_chart), width="stretch")
+            account_events = pd.DataFrame()
+            if not contribution_events.empty:
+                account_events = contribution_events[contribution_events["account"] == account].copy()
+            if not account_events.empty:
+                account_events["Amount"] = account_events["amount"].apply(money)
+                account_events = account_events.rename(
+                    columns={
+                        "month": "Month",
+                        "event_type": "Event",
+                        "label": "Label",
+                    }
+                )
+                st.caption("Contribution and withdrawal events")
+                st.dataframe(
+                    account_events[["Month", "Event", "Amount", "Label"]],
+                    width="stretch",
+                    hide_index=True,
+                )
 
     display_rows = history.rename(
         columns={
@@ -952,6 +1027,7 @@ def render_investments(month: date) -> None:
     ]:
         display_rows[column] = display_rows[column].apply(lambda value: "" if pd.isna(value) else money(value))
 
+    st.subheader("Investment Records")
     st.dataframe(
         display_rows[
             [
@@ -978,7 +1054,7 @@ def render_investments(month: date) -> None:
                 "label": "Label",
             }
         )
-        st.subheader("Contribution and Withdrawal Events")
+        st.subheader("All Contribution and Withdrawal Events")
         st.dataframe(
             contribution_events[["Month", "Account", "Event", "Amount", "Label"]],
             width="stretch",
