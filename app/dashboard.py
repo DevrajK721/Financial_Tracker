@@ -5,14 +5,14 @@ from __future__ import annotations
 # .venv/bin/python finance.py dashboard
 
 import sys
+import json
 from datetime import date
 from decimal import Decimal
+from html import escape
 from pathlib import Path
+from urllib.parse import quote
 
-import altair as alt
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy import select
 
@@ -129,7 +129,6 @@ ADD_SECTION_LABELS = {
 }
 PAGE_SLUGS = {page: page.lower().replace(" ", "-") for page in PAGES}
 PAGES_BY_SLUG = {slug: page for page, slug in PAGE_SLUGS.items()}
-ACCENT_SEQUENCE = ["#ff6b6b", "#f2c875", "#8fb8ff", "#c68cff", "#f08ab8", "#a9a1b8"]
 
 
 st.set_page_config(
@@ -467,17 +466,225 @@ def inject_css() -> None:
     )
 
 
-def chart_theme(fig):
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#f7f1f1",
-        legend_title_text="",
-        margin=dict(l=10, r=10, t=45, b=10),
+def static_table(data: pd.DataFrame | list[dict], columns: list[str] | None = None) -> None:
+    """Render a static HTML table instead of Streamlit's interactive dataframe."""
+    frame = pd.DataFrame(data)
+    if frame.empty:
+        st.caption("No records to show.")
+        return
+    if columns is not None:
+        frame = frame[columns]
+
+    header = "".join(f"<th>{escape(str(column))}</th>" for column in frame.columns)
+    rows = []
+    for row in frame.itertuples(index=False):
+        cells = "".join(f"<td>{escape('' if pd.isna(value) else str(value))}</td>" for value in row)
+        rows.append(f"<tr>{cells}</tr>")
+
+    st.markdown(
+        "<div style='overflow-x:auto;'>"
+        "<table style='width:100%; border-collapse:collapse; border:1px solid #35323c; border-radius:10px; overflow:hidden;'>"
+        f"<thead><tr style='background:#1e1d24;'>{header}</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+        "</div>"
+        "<style>td, th { padding: 0.58rem 0.7rem; border-bottom: 1px solid #2a2830; } "
+        "th { color: #f7f1f1; text-align: left; } td { color: #d8d0d2; }</style>",
+        unsafe_allow_html=True,
     )
-    fig.update_xaxes(gridcolor="rgba(184,174,176,0.16)", zerolinecolor="rgba(184,174,176,0.25)")
-    fig.update_yaxes(gridcolor="rgba(184,174,176,0.16)", zerolinecolor="rgba(184,174,176,0.25)")
-    return fig
+
+
+def static_bar_chart(
+    data: pd.DataFrame,
+    *,
+    label_column: str,
+    value_column: str,
+    title: str,
+    color: str = "#ff6b6b",
+) -> None:
+    """Render a simple static horizontal bar chart."""
+    if data.empty:
+        st.caption("No chart data to show.")
+        return
+
+    chart = data[[label_column, value_column]].copy()
+    chart[value_column] = pd.to_numeric(chart[value_column], errors="coerce").fillna(0)
+    max_value = max(float(chart[value_column].abs().max()), 1.0)
+    bars = []
+    for row in chart.to_dict("records"):
+        label = escape(str(row[label_column]))
+        value = float(row[value_column])
+        width = min(abs(value) / max_value * 100, 100)
+        bar_color = color if value >= 0 else "#ff8a8a"
+        bars.append(
+            "<div style='margin:0.55rem 0;'>"
+            f"<div style='display:flex; justify-content:space-between; gap:1rem; color:#d8d0d2; font-size:0.92rem;'>"
+            f"<span>{label}</span><span>{money(value)}</span></div>"
+            "<div style='height:0.7rem; background:#1e1d24; border-radius:999px; overflow:hidden; border:1px solid #35323c;'>"
+            f"<div style='height:100%; width:{width:.2f}%; background:{bar_color};'></div>"
+            "</div></div>"
+        )
+
+    st.markdown(
+        "<div style='background:#101016; border:1px solid #35323c; border-radius:12px; padding:1rem; margin:0.75rem 0;'>"
+        f"<h4 style='margin:0 0 0.8rem; color:#f7f1f1;'>{escape(title)}</h4>"
+        f"{''.join(bars)}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def static_line_chart(
+    data: pd.DataFrame,
+    *,
+    x_column: str,
+    y_column: str,
+    series_column: str,
+    title: str,
+) -> None:
+    """Render a static SVG line chart for dashboard history."""
+    chart_data = data[[x_column, y_column, series_column]].rename(
+        columns={x_column: "month", y_column: "value", series_column: "Series"}
+    )
+    st.markdown(investment_svg_chart(chart_data, pd.DataFrame(), title), unsafe_allow_html=True)
+
+
+def investment_svg_chart(chart_data: pd.DataFrame, markers: pd.DataFrame, title: str) -> str:
+    """Render an investment chart as static SVG to avoid heavy chart runtimes."""
+    clean_data = chart_data.dropna(subset=["month", "value"]).copy()
+    if clean_data.empty:
+        return "<p>No chart data available yet.</p>"
+
+    clean_data["month"] = pd.to_datetime(clean_data["month"])
+    clean_data["value"] = pd.to_numeric(clean_data["value"], errors="coerce")
+    clean_data = clean_data.dropna(subset=["value"])
+    if clean_data.empty:
+        return "<p>No chart data available yet.</p>"
+
+    width = 900
+    height = 330
+    left = 72
+    right = 24
+    top = 42
+    bottom = 58
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+
+    min_date = clean_data["month"].min()
+    max_date = clean_data["month"].max()
+    min_x = min_date.toordinal()
+    max_x = max_date.toordinal()
+    if min_x == max_x:
+        min_x -= 15
+        max_x += 15
+
+    values = clean_data["value"].astype(float)
+    min_y = min(0.0, float(values.min()))
+    max_y = float(values.max())
+    if min_y == max_y:
+        padding = max(abs(max_y) * 0.1, 1.0)
+        min_y -= padding
+        max_y += padding
+    else:
+        padding = (max_y - min_y) * 0.12
+        min_y -= padding
+        max_y += padding
+
+    def x_pos(value: pd.Timestamp) -> float:
+        return left + ((value.toordinal() - min_x) / (max_x - min_x)) * plot_width
+
+    def y_pos(value: float) -> float:
+        return top + ((max_y - value) / (max_y - min_y)) * plot_height
+
+    palette = ["#ff6b6b", "#f2c875", "#8fb8ff", "#c68cff", "#f08ab8", "#a9a1b8"]
+    series_names = list(dict.fromkeys(clean_data["Series"].astype(str)))
+    series_styles = {
+        "Balance": {"color": "#ff6b6b", "dash": ""},
+        "Projected incl. regular contributions": {"color": "#f2c875", "dash": "8 6"},
+        "Projected performance only": {"color": "#8fb8ff", "dash": "2 5"},
+    }
+    for index, series in enumerate(series_names):
+        series_styles.setdefault(series, {"color": palette[index % len(palette)], "dash": ""})
+    elements = [
+        "<div style='width:100%; overflow-x:auto;'>",
+        f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='{escape(title)}' "
+        "style='width:100%; min-width:680px; background:#101016; border:1px solid #35323c; border-radius:12px;'>",
+        f"<text x='{left}' y='26' fill='#f7f1f1' font-size='17' font-weight='700'>{escape(title)}</text>",
+        f"<line x1='{left}' y1='{top + plot_height}' x2='{left + plot_width}' y2='{top + plot_height}' stroke='#35323c' />",
+        f"<line x1='{left}' y1='{top}' x2='{left}' y2='{top + plot_height}' stroke='#35323c' />",
+    ]
+
+    for index in range(5):
+        y_value = min_y + ((max_y - min_y) * index / 4)
+        y = y_pos(y_value)
+        elements.append(
+            f"<line x1='{left}' y1='{y:.1f}' x2='{left + plot_width}' y2='{y:.1f}' "
+            "stroke='#25242b' stroke-width='1' />"
+        )
+        elements.append(
+            f"<text x='{left - 10}' y='{y + 4:.1f}' fill='#b8aeb0' font-size='11' text-anchor='end'>"
+            f"£{y_value:,.0f}</text>"
+        )
+
+    tick_dates = [min_date, min_date + ((max_date - min_date) / 2), max_date]
+    for tick_date in tick_dates:
+        x = x_pos(tick_date)
+        elements.append(
+            f"<text x='{x:.1f}' y='{height - 22}' fill='#b8aeb0' font-size='11' text-anchor='middle'>"
+            f"{escape(tick_date.strftime('%b %Y'))}</text>"
+        )
+
+    legend_x = left
+    legend_y = height - 8
+    data_series = set(clean_data["Series"])
+    for series in series_names:
+        style = series_styles[series]
+        if series not in data_series:
+            continue
+        elements.append(
+            f"<line x1='{legend_x}' y1='{legend_y}' x2='{legend_x + 28}' y2='{legend_y}' "
+            f"stroke='{style['color']}' stroke-width='3' stroke-dasharray='{style['dash']}' />"
+        )
+        elements.append(
+            f"<text x='{legend_x + 36}' y='{legend_y + 4}' fill='#d8d0d2' font-size='11'>"
+            f"{escape(series)}</text>"
+        )
+        legend_x += 230
+
+    for series in series_names:
+        style = series_styles[series]
+        series_rows = clean_data[clean_data["Series"] == series].sort_values("month")
+        if series_rows.empty:
+            continue
+        points = " ".join(
+            f"{x_pos(row.month):.1f},{y_pos(float(row.value)):.1f}"
+            for row in series_rows.itertuples(index=False)
+        )
+        elements.append(
+            f"<polyline fill='none' stroke='{style['color']}' stroke-width='3' "
+            f"stroke-linecap='round' stroke-linejoin='round' stroke-dasharray='{style['dash']}' points='{points}' />"
+        )
+        for row in series_rows.itertuples(index=False):
+            x = x_pos(row.month)
+            y = y_pos(float(row.value))
+            elements.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='4' fill='{style['color']}' />")
+
+    if not markers.empty:
+        clean_markers = markers.dropna(subset=["month", "current_balance"]).copy()
+        clean_markers["month"] = pd.to_datetime(clean_markers["month"])
+        clean_markers["current_balance"] = pd.to_numeric(clean_markers["current_balance"], errors="coerce")
+        clean_markers = clean_markers.dropna(subset=["current_balance"])
+        for marker in clean_markers.itertuples(index=False):
+            x = x_pos(marker.month)
+            y = y_pos(float(marker.current_balance))
+            label = escape(str(getattr(marker, "marker_label", "Contribution / withdrawal")))
+            elements.append(
+                f"<polygon points='{x:.1f},{y - 8:.1f} {x + 8:.1f},{y:.1f} {x:.1f},{y + 8:.1f} {x - 8:.1f},{y:.1f}' "
+                "fill='#f2c875' stroke='#08080a' stroke-width='1.5'>"
+                f"<title>{label}</title></polygon>"
+            )
+
+    elements.extend(["</svg>", "</div>"])
+    return "".join(elements)
 
 
 def debt_history() -> list[dict]:
@@ -514,13 +721,16 @@ def entries_href(month_label: str, section: str, edit_section: str | None = None
 
 
 def selected_page() -> str:
-    """Read the current page from session state, falling back to the URL."""
+    """Read the current page from the URL, falling back to session state."""
+    slug = query_param("page")
+    if slug in PAGES_BY_SLUG:
+        return PAGES_BY_SLUG[slug]
+
     session_page = st.session_state.get("selected_page")
     if session_page in PAGES:
         return session_page
 
-    slug = query_param("page") or PAGE_SLUGS["Entries"]
-    return PAGES_BY_SLUG.get(slug, "Entries")
+    return "Entries"
 
 
 def selected_entry_section() -> str:
@@ -541,7 +751,7 @@ def selected_month() -> tuple[date | None, list[str], str | None]:
 
     options = months or [fallback]
     labels = [month.strftime("%Y-%m") for month in options if month is not None]
-    selected = st.session_state.get("selected_month") or query_param("month")
+    selected = query_param("month") or st.session_state.get("selected_month")
     if selected not in labels:
         selected = labels[-1]
     return date.fromisoformat(f"{selected}-01"), labels, selected
@@ -570,38 +780,41 @@ def render_button_nav(
                 width="stretch",
             ):
                 st.session_state[state_key] = option
-                st.rerun()
 
     return st.session_state.get(state_key, current)
 
 
 def render_top_nav(page: str, month_labels: list[str], selected_month_label: str | None) -> tuple[str, str | None]:
-    """Render button navigation without full-page reloads or selected-pill clicks."""
+    """Render same-tab links for top navigation to avoid Streamlit button rerun crashes."""
     st.markdown('<div class="nav-shell">', unsafe_allow_html=True)
-    selected_page_value = render_button_nav(
-        label="View",
-        options=PAGES,
-        current=page,
-        state_key="selected_page",
-        key_prefix="page_nav",
-        format_func=lambda option: PAGE_LABELS[option],
+    st.caption("View")
+    page_links = "".join(
+        (
+            f"<a class='nav-pill {'active' if option == page else ''}' "
+            f"href='{escape(nav_href(option, selected_month_label), quote=True)}' target='_self'>"
+            f"{escape(PAGE_LABELS[option])}</a>"
+        )
+        for option in PAGES
     )
+    st.markdown(f"<div class='nav-row'>{page_links}</div>", unsafe_allow_html=True)
 
     selected_month_value = selected_month_label
     if month_labels:
-        selected_month_value = render_button_nav(
-            label="Month",
-            options=month_labels,
-            current=selected_month_label or month_labels[-1],
-            state_key="selected_month",
-            key_prefix="month_nav",
-            format_func=lambda option: option,
+        st.caption("Month")
+        month_links = "".join(
+            (
+                f"<a class='month-pill {'active' if option == selected_month_label else ''}' "
+                f"href='?page={PAGE_SLUGS[page]}&month={escape(option, quote=True)}' target='_self'>"
+                f"{escape(option)}</a>"
+            )
+            for option in month_labels
         )
+        st.markdown(f"<div class='nav-row'>{month_links}</div>", unsafe_allow_html=True)
     else:
         st.caption("No month yet")
 
     st.markdown("</div>", unsafe_allow_html=True)
-    return selected_page_value, selected_month_value
+    return page, selected_month_value
 
 
 def render_entries_subnav(section: str) -> str:
@@ -670,33 +883,23 @@ def render_balances(month: date) -> None:
     balances["Snapshot Used"] = balances["snapshot_type"].apply(lambda value: display_label(value, SNAPSHOT_TYPE_LABELS))
     balances["Emergency Fund"] = balances["is_emergency_fund"].map({True: "Yes", False: "No"})
 
-    left, right = st.columns([1.3, 1])
-    with left:
-        fig = px.bar(
-            balances,
-            x="Account",
-            y="signed_balance",
-            color="Account Type",
-            title="Balances by Account",
-            color_discrete_sequence=ACCENT_SEQUENCE,
-        )
-        st.plotly_chart(chart_theme(fig), width="stretch")
-    with right:
-        by_type = balances.groupby("Account Type", as_index=False)["balance"].sum()
-        fig = px.pie(
-            by_type,
-            names="Account Type",
-            values="balance",
-            title="Balance Mix",
-            hole=0.45,
-            color_discrete_sequence=ACCENT_SEQUENCE,
-        )
-        st.plotly_chart(chart_theme(fig), width="stretch")
+    static_bar_chart(
+        balances,
+        label_column="Account",
+        value_column="signed_balance",
+        title="Balances by Account",
+    )
+    by_type = balances.groupby("Account Type", as_index=False)["balance"].sum()
+    static_bar_chart(
+        by_type,
+        label_column="Account Type",
+        value_column="balance",
+        title="Balance Mix",
+        color="#f2c875",
+    )
 
-    st.dataframe(
+    static_table(
         balances[["Account", "Account Type", "Balance", "Snapshot Used", "Emergency Fund"]],
-        width="stretch",
-        hide_index=True,
     )
 
 
@@ -711,18 +914,15 @@ def render_statistics(summary: dict) -> None:
         for column in ["net_worth", "assets", "debts"]:
             net_worth[column] = pd.to_numeric(net_worth[column], errors="coerce")
 
-        net_worth_fig = go.Figure()
-        net_worth_fig.add_trace(
-            go.Scatter(
-                x=net_worth["month"],
-                y=net_worth["net_worth"],
-                mode="lines+markers",
-                name="Actual Net Worth",
-                line=dict(color="#ff6b6b", width=3),
-            )
+        actual_net_worth = net_worth[["month", "net_worth"]].copy()
+        actual_net_worth["Series"] = "Actual Net Worth"
+        static_line_chart(
+            actual_net_worth,
+            x_column="month",
+            y_column="net_worth",
+            series_column="Series",
+            title="Actual Net Worth",
         )
-        net_worth_fig.update_layout(title="Actual Net Worth")
-        st.plotly_chart(chart_theme(net_worth_fig), width="stretch")
 
         if not projection.empty:
             projection["projected_net_worth"] = pd.to_numeric(
@@ -737,50 +937,29 @@ def render_statistics(summary: dict) -> None:
                 ],
                 ignore_index=True,
             )
+            projection_actual = net_worth[["month", "net_worth"]].rename(columns={"net_worth": "value"})
+            projection_actual["Series"] = "Actual Net Worth"
+            projection_future = projection_chart.rename(columns={"projected_net_worth": "value"})
+            projection_future["Series"] = "Projected Net Worth"
+            static_line_chart(
+                pd.concat([projection_actual, projection_future], ignore_index=True),
+                x_column="month",
+                y_column="value",
+                series_column="Series",
+                title="Net Worth Projection",
+            )
 
-            projection_fig = go.Figure()
-            projection_fig.add_trace(
-                go.Scatter(
-                    x=net_worth["month"],
-                    y=net_worth["net_worth"],
-                    mode="lines+markers",
-                    name="Actual Net Worth",
-                    line=dict(color="#ff6b6b", width=3),
-                )
-            )
-            projection_fig.add_trace(
-                go.Scatter(
-                    x=projection_chart["month"],
-                    y=projection_chart["projected_net_worth"],
-                    mode="lines+markers",
-                    name="Projected Net Worth",
-                    line=dict(color="#f2c875", width=3, dash="dash"),
-                )
-            )
-            projection_fig.update_layout(title="Net Worth Projection")
-            st.plotly_chart(chart_theme(projection_fig), width="stretch")
-
-        balance_fig = go.Figure()
-        balance_fig.add_trace(
-            go.Scatter(
-                x=net_worth["month"],
-                y=net_worth["assets"],
-                mode="lines+markers",
-                name="Assets",
-                line=dict(color="#8fb8ff", width=2),
-            )
+        assets = net_worth[["month", "assets"]].rename(columns={"assets": "value"})
+        assets["Series"] = "Assets"
+        debts = net_worth[["month", "debts"]].rename(columns={"debts": "value"})
+        debts["Series"] = "Debts"
+        static_line_chart(
+            pd.concat([assets, debts], ignore_index=True),
+            x_column="month",
+            y_column="value",
+            series_column="Series",
+            title="Assets and Debts Over Time",
         )
-        balance_fig.add_trace(
-            go.Scatter(
-                x=net_worth["month"],
-                y=net_worth["debts"],
-                mode="lines+markers",
-                name="Debts",
-                line=dict(color="#ff8a8a", width=2),
-            )
-        )
-        balance_fig.update_layout(title="Assets and Debts Over Time")
-        st.plotly_chart(chart_theme(balance_fig), width="stretch")
     else:
         st.info("Add end-of-month snapshots to build net worth history.")
 
@@ -794,60 +973,51 @@ def render_spending(month: date, summary: dict) -> None:
         [{"category": category, **values} for category, values in summary["spending_vs_baseline"].items()]
     )
 
-    left, right = st.columns(2)
-    with left:
-        if not current.empty:
-            current["Category"] = current["category"].apply(lambda value: display_label(value, EXPENSE_CATEGORY_LABELS))
-            fig = px.pie(
-                current,
-                names="Category",
-                values="amount",
-                title="This Month by Category",
-                hole=0.45,
-                color_discrete_sequence=ACCENT_SEQUENCE,
-            )
-            st.plotly_chart(chart_theme(fig), width="stretch")
-        else:
-            st.info("No expenses entered for this month.")
-    with right:
-        if not baseline.empty:
-            baseline["Category"] = baseline["category"].apply(lambda value: display_label(value, EXPENSE_CATEGORY_LABELS))
-            fig = px.bar(
-                baseline,
-                x="Category",
-                y="difference",
-                title="This Month vs Previous Median",
-                color="difference",
-                color_continuous_scale=["#ff6b6b", "#f2c875", "#ff8a8a"],
-            )
-            st.plotly_chart(chart_theme(fig), width="stretch")
-        else:
-            st.info("Add previous months to compare spending.")
+    if not current.empty:
+        current["Category"] = current["category"].apply(lambda value: display_label(value, EXPENSE_CATEGORY_LABELS))
+        static_bar_chart(
+            current,
+            label_column="Category",
+            value_column="amount",
+            title="This Month by Category",
+            color="#f2c875",
+        )
+    else:
+        st.info("No expenses entered for this month.")
+
+    if not baseline.empty:
+        baseline["Category"] = baseline["category"].apply(lambda value: display_label(value, EXPENSE_CATEGORY_LABELS))
+        static_bar_chart(
+            baseline,
+            label_column="Category",
+            value_column="difference",
+            title="This Month vs Previous Median",
+        )
+    else:
+        st.info("Add previous months to compare spending.")
 
     if not history.empty:
-        fig = px.line(
+        history["Series"] = "Spending"
+        static_line_chart(
             history,
-            x="month",
-            y="spending",
-            markers=True,
+            x_column="month",
+            y_column="spending",
+            series_column="Series",
             title="Total Spending Over Time",
-            color_discrete_sequence=["#f2c875"],
         )
-        st.plotly_chart(chart_theme(fig), width="stretch")
 
     if not category_history.empty:
         category_history["Category"] = category_history["category"].apply(
             lambda value: display_label(value, EXPENSE_CATEGORY_LABELS)
         )
-        fig = px.bar(
+        category_history = category_history.rename(columns={"Category": "Series"})
+        static_line_chart(
             category_history,
-            x="month",
-            y="amount",
-            color="Category",
+            x_column="month",
+            y_column="amount",
+            series_column="Series",
             title="Category Spending Over Time",
-            color_discrete_sequence=ACCENT_SEQUENCE,
         )
-        st.plotly_chart(chart_theme(fig), width="stretch")
 
 
 def render_investments(month: date) -> None:
@@ -895,7 +1065,22 @@ def render_investments(month: date) -> None:
             errors="coerce",
         )
 
-    for account in sorted(history["account"].unique()):
+    account_names = sorted(history["account"].unique())
+    selected_account = query_param("investment")
+    if selected_account not in account_names:
+        selected_account = account_names[0]
+    account_links = "".join(
+        (
+            f"<a class='subnav-pill {'active' if account == selected_account else ''}' "
+            f"href='?page=investments&month={month.strftime('%Y-%m')}&investment={quote(account)}' target='_self'>"
+            f"{escape(account)}</a>"
+        )
+        for account in account_names
+    )
+    st.caption("Choose an account to view its chart. Rendering one account at a time keeps this page stable.")
+    st.markdown(f"<div class='subnav-row'>{account_links}</div>", unsafe_allow_html=True)
+
+    for account in [selected_account]:
         account_history = history[history["account"] == account].sort_values("month").copy()
         account_type = str(account_history["Account Type"].dropna().iloc[-1])
         balance_values = account_history["current_balance"].dropna()
@@ -950,71 +1135,21 @@ def render_investments(month: date) -> None:
                 chart_rows.extend([projected_with_contributions, projected_performance_only])
 
             account_chart_data = pd.concat(chart_rows, ignore_index=True)
-            account_chart_data["month"] = pd.to_datetime(account_chart_data["month"])
-            account_chart_data["value"] = pd.to_numeric(account_chart_data["value"], errors="coerce")
             contribution_markers = account_history[account_history["has_contribution"].astype(bool)].copy()
-            line_chart = (
-                alt.Chart(account_chart_data)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("month:T", title="Month"),
-                    y=alt.Y("value:Q", title="Balance (£)"),
-                    color=alt.Color(
-                        "Series:N",
-                        scale=alt.Scale(
-                            domain=[
-                                "Balance",
-                                "Projected incl. regular contributions",
-                                "Projected performance only",
-                            ],
-                            range=["#ff6b6b", "#f2c875", "#8fb8ff"],
-                        ),
-                    ),
-                    strokeDash=alt.StrokeDash(
-                        "Series:N",
-                        scale=alt.Scale(
-                            domain=[
-                                "Balance",
-                                "Projected incl. regular contributions",
-                                "Projected performance only",
-                            ],
-                            range=[[1, 0], [8, 5], [2, 4]],
-                        ),
-                    ),
-                    tooltip=[
-                        alt.Tooltip("month:T", title="Month", format="%b %Y"),
-                        alt.Tooltip("Series:N", title="Series"),
-                        alt.Tooltip("value:Q", title="Balance", format=",.2f"),
-                    ],
-                )
-                .properties(title=f"{account} Balance and Projection", height=320)
-            )
 
             if not contribution_markers.empty:
                 contribution_markers["marker_label"] = contribution_markers["net_contributions"].apply(
                     lambda value: f"Net contribution: {money(value)}"
                 )
-                contribution_markers["month"] = pd.to_datetime(contribution_markers["month"])
-                contribution_markers["current_balance"] = pd.to_numeric(
-                    contribution_markers["current_balance"],
-                    errors="coerce",
-                )
-                marker_chart = (
-                    alt.Chart(contribution_markers)
-                    .mark_point(filled=True, shape="diamond", size=130, color="#f2c875")
-                    .encode(
-                        x=alt.X("month:T", title="Month"),
-                        y=alt.Y("current_balance:Q", title="Balance (£)"),
-                        tooltip=[
-                            alt.Tooltip("month:T", title="Month", format="%b %Y"),
-                            alt.Tooltip("marker_label:N", title="Event"),
-                            alt.Tooltip("current_balance:Q", title="Balance", format=",.2f"),
-                        ],
-                    )
-                )
-                line_chart = line_chart + marker_chart
 
-            st.altair_chart(line_chart, width="stretch")
+            st.markdown(
+                investment_svg_chart(
+                    account_chart_data,
+                    contribution_markers,
+                    f"{account} Balance and Projection",
+                ),
+                unsafe_allow_html=True,
+            )
 
             account_events = pd.DataFrame()
             if not contribution_events.empty:
@@ -1029,10 +1164,8 @@ def render_investments(month: date) -> None:
                     }
                 )
                 st.caption("Contribution and withdrawal events")
-                st.dataframe(
+                static_table(
                     account_events[["Month", "Event", "Amount", "Label"]],
-                    width="stretch",
-                    hide_index=True,
                 )
 
     display_rows = history.rename(
@@ -1061,7 +1194,7 @@ def render_investments(month: date) -> None:
         display_rows[column] = display_rows[column].apply(lambda value: "" if pd.isna(value) else money(value))
 
     st.subheader("Investment Records")
-    st.dataframe(
+    static_table(
         display_rows[
             [
                 "Month",
@@ -1073,8 +1206,6 @@ def render_investments(month: date) -> None:
                 "Has Start & End Snapshot",
             ]
         ],
-        width="stretch",
-        hide_index=True,
     )
 
     if not contribution_events.empty:
@@ -1088,10 +1219,8 @@ def render_investments(month: date) -> None:
             }
         )
         st.subheader("All Contribution and Withdrawal Events")
-        st.dataframe(
+        static_table(
             contribution_events[["Month", "Account", "Event", "Amount", "Label"]],
-            width="stretch",
-            hide_index=True,
         )
 
 
@@ -1106,29 +1235,22 @@ def render_debts(summary: dict) -> None:
     history = pd.DataFrame(debt_history())
     projection = pd.DataFrame(summary["debt_projection"])
     if not history.empty or not projection.empty:
-        fig = go.Figure()
+        chart_rows = []
         if not history.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=history["month"],
-                    y=history["debt"],
-                    mode="lines+markers",
-                    name="Actual Debt",
-                    line=dict(color="#ff8a8a", width=3),
-                )
-            )
+            actual = history.rename(columns={"debt": "value"})
+            actual["Series"] = "Actual Debt"
+            chart_rows.append(actual[["month", "value", "Series"]])
         if not projection.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=projection["month"],
-                    y=projection["projected_debt"].astype(float),
-                    mode="lines+markers",
-                    name="Projected Debt",
-                    line=dict(color="#f2c875", width=3, dash="dash"),
-                )
-            )
-        fig.update_layout(title="Debt Growth with Projection")
-        st.plotly_chart(chart_theme(fig), width="stretch")
+            projected = projection.rename(columns={"projected_debt": "value"})
+            projected["Series"] = "Projected Debt"
+            chart_rows.append(projected[["month", "value", "Series"]])
+        static_line_chart(
+            pd.concat(chart_rows, ignore_index=True),
+            x_column="month",
+            y_column="value",
+            series_column="Series",
+            title="Debt Growth with Projection",
+        )
     else:
         st.info("Add debt snapshots to build debt history and projections.")
 
@@ -1140,15 +1262,13 @@ def render_debts(summary: dict) -> None:
         ]
     )
     if not debt_mix.empty:
-        fig = px.pie(
+        static_bar_chart(
             debt_mix,
-            names="debt",
-            values="balance",
+            label_column="debt",
+            value_column="balance",
             title="Debt Mix",
-            hole=0.45,
-            color_discrete_sequence=ACCENT_SEQUENCE,
+            color="#ff8a8a",
         )
-        st.plotly_chart(chart_theme(fig), width="stretch")
 
     payoff = pd.DataFrame(
         [
@@ -1163,7 +1283,7 @@ def render_debts(summary: dict) -> None:
         ]
     )
     if not payoff.empty:
-        st.dataframe(payoff, width="stretch", hide_index=True)
+        static_table(payoff)
     else:
         st.caption("No debt payoff data for this month.")
 
@@ -1183,16 +1303,16 @@ def render_goals(summary: dict) -> None:
                 "months_remaining": "Estimated Months Remaining",
             }
         )
-        fig = px.bar(
+        goal_chart = goal_projection.copy()
+        goal_chart["Total Target"] = goal_chart["Allocated"] + goal_chart["Remaining"]
+        static_bar_chart(
             goal_projection,
-            x="Goal",
-            y=["Allocated", "Remaining"],
-            title="Goal Funding",
-            barmode="stack",
-            color_discrete_sequence=["#ff6b6b", "#35323c"],
+            label_column="Goal",
+            value_column="Allocated",
+            title="Goal Funding - Allocated",
+            color="#f2c875",
         )
-        st.plotly_chart(chart_theme(fig), width="stretch")
-        st.dataframe(goal_projection, width="stretch", hide_index=True)
+        static_table(goal_projection)
     elif not goals.empty:
         goals = goals.rename(
             columns={
@@ -1201,7 +1321,7 @@ def render_goals(summary: dict) -> None:
                 "target_date": "Target Date",
             }
         )
-        st.dataframe(goals, width="stretch", hide_index=True)
+        static_table(goals)
     else:
         st.caption("No active goals entered yet.")
 
@@ -1222,7 +1342,7 @@ def render_goals(summary: dict) -> None:
         subscriptions["Billing Frequency"] = subscriptions["Billing Frequency"].apply(
             lambda value: display_label(value, BILLING_FREQUENCY_LABELS)
         )
-        st.dataframe(subscriptions, width="stretch", hide_index=True)
+        static_table(subscriptions)
     else:
         st.caption("No active subscriptions entered yet.")
 
@@ -1240,18 +1360,21 @@ def render_raw(month: date, summary: dict) -> None:
         balances["Balance"] = balances["balance"].apply(money)
         balances["Snapshot Used"] = balances["snapshot_type"].apply(lambda value: display_label(value, SNAPSHOT_TYPE_LABELS))
         balances["Emergency Fund"] = balances["is_emergency_fund"].map({True: "Yes", False: "No"})
-        st.dataframe(
+        static_table(
             balances.rename(columns={"account": "Account"})[
                 ["Account", "Account Type", "Balance", "Snapshot Used", "Emergency Fund"]
             ],
-            width="stretch",
-            hide_index=True,
         )
     if not expenses.empty:
         expenses["Category"] = expenses["category"].apply(lambda value: display_label(value, EXPENSE_CATEGORY_LABELS))
         expenses["Amount"] = expenses["amount"].apply(money)
-        st.dataframe(expenses[["Category", "Amount"]], width="stretch", hide_index=True)
-    st.json(summary, expanded=False)
+        static_table(expenses[["Category", "Amount"]])
+    st.subheader("Summary Data")
+    st.markdown(
+        f"<pre style='white-space:pre-wrap; background:#101016; border:1px solid #35323c; "
+        f"border-radius:12px; padding:1rem; color:#d8d0d2;'>{escape(json.dumps(summary, indent=2, default=str))}</pre>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_add_entries(default_month: date) -> None:
@@ -1672,7 +1795,7 @@ def render_edit_monthly_record(default_month: date) -> None:
         st.info("No records of this type to edit.")
         return
 
-    st.dataframe(preview, width="stretch", hide_index=True)
+    static_table(preview)
     record_choices = {row["Record"]: row["_record_id"] for row in rows}
     selected_record = st.selectbox("Record to edit", list(record_choices), key="edit_record_id")
     record_id = record_choices[selected_record]

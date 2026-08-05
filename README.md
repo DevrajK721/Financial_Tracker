@@ -450,12 +450,14 @@ The dashboard is organised with a modern top menu:
 - `🏦 Balances`: account balances and balance mix.
 - `📈 Statistics`: actual net worth, net worth projection, and assets/debts over time.
 - `📊 Investments`: separate trading, ISA, savings, and pension charts with contribution markers and projections.
-- `🥧 Spending`: spending pie chart, previous-month comparison, total spending, and category trends.
+- `🥧 Spending`: spending breakdown, previous-month comparison, total spending, and category trends.
 - `📉 Debts`: debt totals, actual debt growth, projected debt growth, debt mix, and payoff estimates.
 - `🎯 Goals`: goal funding and subscriptions.
-- `🧾 Records`: readable records and summary JSON.
+- `🧾 Records`: readable records and summary data.
 
-Navigation uses button-style page controls rather than browser links. The page you are already on is disabled, so clicking the active page again should not trigger another dashboard rerun.
+Navigation uses same-tab links in the top menu. This avoids Streamlit button rerun issues and should not open a new browser tab.
+
+The read-only dashboard pages use static HTML/SVG charts and static tables rather than interactive chart/dataframe components. This is intentional: it keeps the dashboard stable on local Streamlit and avoids segmentation faults from heavier frontend components.
 
 The app uses a dark theme with red accents configured in `.streamlit/config.toml`.
 
