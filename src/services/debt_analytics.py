@@ -12,7 +12,7 @@ from src.db import session_scope
 from src.models.debt_profile import DebtProfile
 from src.services.snapshot_balances import MonthlyAccountBalance, monthly_account_balances
 from src.services.spending_baseline import previous_months
-from src.services.projections import add_months
+from src.services.projections import project_total_debt
 
 
 def calculate_total_debt(month: date) -> Decimal:
@@ -101,37 +101,5 @@ def estimate_payoff_months(balance: Decimal, monthly_rate: Decimal, monthly_paym
 
 
 def project_debt_balance(month: date, months_forward: int = 12) -> list[dict[str, Decimal | str]]:
-    """Project total debt using simple monthly interest and minimum payments."""
-    with session_scope() as session:
-        profiles = session.scalars(select(DebtProfile)).all()
-
-    rows = debt_balances_for_month(month)
-    profiles_by_account = {profile.account_id: profile for profile in profiles}
-    balances = {balance.account_id: balance.balance for balance in rows}
-    if not balances:
-        return []
-
-    projection = []
-
-    for index in range(1, months_forward + 1):
-        total = Decimal("0.00")
-        for account_id, balance in list(balances.items()):
-            profile = profiles_by_account.get(account_id)
-            monthly_rate = Decimal("0.00")
-            minimum_payment = Decimal("0.00")
-            if profile is not None:
-                monthly_rate = (profile.interest_rate / Decimal("100")) / Decimal("12")
-                minimum_payment = profile.minimum_payment or Decimal("0.00")
-
-            next_balance = max(Decimal("0.00"), (balance * (Decimal("1") + monthly_rate)) - minimum_payment)
-            balances[account_id] = next_balance
-            total += next_balance
-
-        projection.append(
-            {
-                "month": add_months(month, index).isoformat(),
-                "projected_debt": total,
-            }
-        )
-
-    return projection
+    """Project total debt using the same logic as net-worth projections."""
+    return project_total_debt(month, months_forward)

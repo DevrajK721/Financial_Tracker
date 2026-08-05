@@ -450,7 +450,7 @@ The dashboard is organised with a modern top menu:
 - `🏦 Balances`: account balances, balance bars, and balance mix pie chart.
 - `📈 Statistics`: actual net worth, net worth projection, and assets/debts over time in a two-column graph grid.
 - `📊 Investments`: all trading, ISA, savings, and pension charts in a two-column graph grid with contribution markers and projections.
-- `🥧 Spending`: spending breakdown, previous-month comparison, total spending, and category trends.
+- `🥧 Spending`: monthly outgoings pie chart, category breakdown, previous-month comparison, total spending, and category trends.
 - `📉 Debts`: debt totals, actual debt growth, projected debt growth, debt mix, and payoff estimates.
 - `🎯 Goals`: goal funding and subscriptions.
 - `🧾 Records`: readable records and summary data.

@@ -1119,12 +1119,22 @@ def render_spending(month: date, summary: dict) -> None:
 
     if not current.empty:
         current["Category"] = current["category"].apply(lambda value: display_label(value, EXPENSE_CATEGORY_LABELS))
-        static_bar_chart(
-            current,
-            label_column="Category",
-            value_column="amount",
-            title="This Month by Category",
-            color="#f2c875",
+        graph_grid(
+            [
+                pie_chart_html(
+                    current,
+                    label_column="Category",
+                    value_column="amount",
+                    title="This Month Outgoings Mix",
+                ),
+                bar_chart_html(
+                    current,
+                    label_column="Category",
+                    value_column="amount",
+                    title="This Month by Category",
+                    color="#f2c875",
+                ),
+            ]
         )
     else:
         st.info("No expenses entered for this month.")

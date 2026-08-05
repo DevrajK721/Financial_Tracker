@@ -4,18 +4,31 @@ from __future__ import annotations
 # These are deliberately simple estimates, not promises.
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
 
+from src.account_types import GROWTH_ACCOUNT_TYPES
 from src.db import session_scope
+from src.models.account import Account
+from src.models.debt_profile import DebtProfile
 from src.models.goal import Goal
 from src.models.monthly_account_snapshot import MonthlyAccountSnapshot
 from src.models.monthly_expense import MonthlyExpense
 from src.models.monthly_goal_allocation import MonthlyGoalAllocation
 from src.models.monthly_income import MonthlyIncome
+from src.models.monthly_transfer import MonthlyTransfer
 from src.services.net_worth import calculate_net_worth
+from src.services.snapshot_balances import monthly_account_balances
 from src.services.spending_baseline import previous_months
+
+
+MONEY = Decimal("0.01")
+
+
+def money_decimal(amount: Decimal) -> Decimal:
+    """Round projected money values to pounds and pence."""
+    return amount.quantize(MONEY, rounding=ROUND_HALF_UP)
 
 
 def average_monthly_savings(month: date, lookback_months: int = 6) -> Decimal:
@@ -36,21 +49,117 @@ def average_monthly_savings(month: date, lookback_months: int = 6) -> Decimal:
 
 
 def project_net_worth(month: date, months_forward: int = 12) -> list[dict[str, Decimal | str]]:
-    """Project net worth by adding average monthly savings to current net worth."""
+    """Project net worth using savings, investment performance, and debt interest."""
     current_net_worth = calculate_net_worth(month)
     monthly_savings = average_monthly_savings(month)
+    monthly_investment_performance = average_monthly_investment_performance(month)
+    debt_projection = project_total_debt(month, months_forward)
+    current_debt = current_total_debt(month)
     projection = []
 
     for index in range(1, months_forward + 1):
         projected_month = add_months(month, index)
+        projected_debt = debt_projection[index - 1]["projected_debt"] if debt_projection else current_debt
+        debt_change = projected_debt - current_debt
+        projected_net_worth = (
+            current_net_worth
+            + (monthly_savings * Decimal(index))
+            + (monthly_investment_performance * Decimal(index))
+            - debt_change
+        )
         projection.append(
             {
                 "month": projected_month.isoformat(),
-                "projected_net_worth": current_net_worth + (monthly_savings * Decimal(index)),
+                "projected_net_worth": money_decimal(projected_net_worth),
             }
         )
 
     return projection
+
+
+def current_total_debt(month: date) -> Decimal:
+    """Return current total debt using the same snapshot rules as net worth."""
+    return sum(
+        (balance.balance for balance in monthly_account_balances(month) if balance.is_debt),
+        Decimal("0.00"),
+    )
+
+
+def project_total_debt(month: date, months_forward: int = 12) -> list[dict[str, Decimal | str]]:
+    """Project total debt using monthly interest and expected/minimum payments."""
+    with session_scope() as session:
+        profiles = session.scalars(select(DebtProfile)).all()
+
+    rows = [balance for balance in monthly_account_balances(month) if balance.is_debt]
+    balances = {balance.account_id: balance.balance for balance in rows}
+    profiles_by_account = {profile.account_id: profile for profile in profiles}
+    if not balances:
+        return []
+
+    projection = []
+    for index in range(1, months_forward + 1):
+        total = Decimal("0.00")
+        for account_id, balance in list(balances.items()):
+            profile = profiles_by_account.get(account_id)
+            monthly_rate = Decimal("0.00")
+            monthly_payment = Decimal("0.00")
+            if profile is not None:
+                monthly_rate = (profile.interest_rate / Decimal("100")) / Decimal("12")
+                monthly_payment = profile.minimum_payment or Decimal("0.00")
+
+            next_balance = money_decimal(
+                max(Decimal("0.00"), (balance * (Decimal("1") + monthly_rate)) - monthly_payment)
+            )
+            balances[account_id] = next_balance
+            total += next_balance
+
+        projection.append({"month": add_months(month, index).isoformat(), "projected_debt": money_decimal(total)})
+
+    return projection
+
+
+def average_monthly_investment_performance(month: date, lookback_months: int = 6) -> Decimal:
+    """Estimate monthly investment performance, excluding contributions/withdrawals."""
+    months = set(previous_months(month, lookback_months))
+    months.add(month)
+
+    with session_scope() as session:
+        accounts = session.scalars(select(Account).where(Account.account_type.in_(GROWTH_ACCOUNT_TYPES))).all()
+        snapshots = session.scalars(select(MonthlyAccountSnapshot).where(MonthlyAccountSnapshot.month.in_(months))).all()
+        transfers = session.scalars(select(MonthlyTransfer).where(MonthlyTransfer.month.in_(months))).all()
+
+    investment_account_ids = {account.id for account in accounts}
+    if not investment_account_ids:
+        return Decimal("0.00")
+
+    snapshot_map: dict[tuple[int, date], dict[str, Decimal]] = {}
+    for snapshot in snapshots:
+        if snapshot.account_id in investment_account_ids:
+            snapshot_map.setdefault((snapshot.account_id, snapshot.month), {})[snapshot.snapshot_type] = snapshot.balance
+
+    transfer_in: dict[tuple[int, date], Decimal] = {}
+    transfer_out: dict[tuple[int, date], Decimal] = {}
+    for transfer in transfers:
+        if transfer.to_account_id in investment_account_ids:
+            key = (transfer.to_account_id, transfer.month)
+            transfer_in[key] = transfer_in.get(key, Decimal("0.00")) + transfer.amount
+        if transfer.from_account_id in investment_account_ids:
+            key = (transfer.from_account_id, transfer.month)
+            transfer_out[key] = transfer_out.get(key, Decimal("0.00")) + transfer.amount
+
+    performance_values = []
+    for key, account_snapshots in snapshot_map.items():
+        start_balance = account_snapshots.get("start")
+        end_balance = account_snapshots.get("end")
+        if start_balance is None or end_balance is None:
+            continue
+        net_contributions = transfer_in.get(key, Decimal("0.00")) - transfer_out.get(key, Decimal("0.00"))
+        performance_values.append(end_balance - start_balance - net_contributions)
+
+    if not performance_values:
+        return Decimal("0.00")
+
+    return sum(performance_values, Decimal("0.00")) / Decimal(len(performance_values))
 
 
 def project_goal_completion(month: date) -> dict[str, dict[str, Decimal | int]]:
