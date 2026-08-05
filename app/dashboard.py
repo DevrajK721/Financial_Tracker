@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -897,7 +898,8 @@ def render_investments(month: date) -> None:
     for account in sorted(history["account"].unique()):
         account_history = history[history["account"] == account].sort_values("month").copy()
         account_type = str(account_history["Account Type"].dropna().iloc[-1])
-        current_balance = account_history["current_balance"].dropna().iloc[-1]
+        balance_values = account_history["current_balance"].dropna()
+        current_balance = balance_values.iloc[-1] if not balance_values.empty else 0
         current_contributions = account_history.loc[
             account_history["month"] == month.isoformat(),
             "net_contributions",
@@ -915,16 +917,11 @@ def render_investments(month: date) -> None:
             card_col2.metric("Net Contributions This Month", money(current_contributions))
             card_col3.metric("Performance / Interest This Month", money(current_performance))
 
-            account_fig = go.Figure()
-            account_fig.add_trace(
-                go.Scatter(
-                    x=account_history["month"],
-                    y=account_history["current_balance"],
-                    mode="lines+markers",
-                    name="Balance",
-                    line=dict(color="#ff6b6b", width=3),
-                )
+            actual_chart_rows = account_history[["month", "current_balance"]].rename(
+                columns={"current_balance": "value"}
             )
+            actual_chart_rows["Series"] = "Balance"
+            chart_rows = [actual_chart_rows]
 
             account_projection = pd.DataFrame()
             if not projection.empty:
@@ -936,52 +933,88 @@ def render_investments(month: date) -> None:
                 projected_with_contributions = pd.concat(
                     [latest_actual, account_projection[["month", "projected_balance"]]],
                     ignore_index=True,
+                ).rename(
+                    columns={"projected_balance": "value"}
                 )
+                projected_with_contributions["Series"] = "Projected incl. regular contributions"
                 projected_performance_only = pd.concat(
                     [
                         latest_actual.rename(columns={"projected_balance": "performance_only_balance"}),
                         account_projection[["month", "performance_only_balance"]],
                     ],
                     ignore_index=True,
+                ).rename(
+                    columns={"performance_only_balance": "value"}
                 )
-                account_fig.add_trace(
-                    go.Scatter(
-                        x=projected_with_contributions["month"],
-                        y=projected_with_contributions["projected_balance"],
-                        mode="lines",
-                        name="Projected incl. regular contributions",
-                        line=dict(color="#f2c875", width=2, dash="dash"),
-                    )
-                )
-                account_fig.add_trace(
-                    go.Scatter(
-                        x=projected_performance_only["month"],
-                        y=projected_performance_only["performance_only_balance"],
-                        mode="lines",
-                        name="Projected performance only",
-                        line=dict(color="#8fb8ff", width=2, dash="dot"),
-                    )
-                )
+                projected_performance_only["Series"] = "Projected performance only"
+                chart_rows.extend([projected_with_contributions, projected_performance_only])
 
+            account_chart_data = pd.concat(chart_rows, ignore_index=True)
+            account_chart_data["month"] = pd.to_datetime(account_chart_data["month"])
+            account_chart_data["value"] = pd.to_numeric(account_chart_data["value"], errors="coerce")
             contribution_markers = account_history[account_history["has_contribution"].astype(bool)].copy()
+            line_chart = (
+                alt.Chart(account_chart_data)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("month:T", title="Month"),
+                    y=alt.Y("value:Q", title="Balance (£)"),
+                    color=alt.Color(
+                        "Series:N",
+                        scale=alt.Scale(
+                            domain=[
+                                "Balance",
+                                "Projected incl. regular contributions",
+                                "Projected performance only",
+                            ],
+                            range=["#ff6b6b", "#f2c875", "#8fb8ff"],
+                        ),
+                    ),
+                    strokeDash=alt.StrokeDash(
+                        "Series:N",
+                        scale=alt.Scale(
+                            domain=[
+                                "Balance",
+                                "Projected incl. regular contributions",
+                                "Projected performance only",
+                            ],
+                            range=[[1, 0], [8, 5], [2, 4]],
+                        ),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("month:T", title="Month", format="%b %Y"),
+                        alt.Tooltip("Series:N", title="Series"),
+                        alt.Tooltip("value:Q", title="Balance", format=",.2f"),
+                    ],
+                )
+                .properties(title=f"{account} Balance and Projection", height=320)
+            )
+
             if not contribution_markers.empty:
                 contribution_markers["marker_label"] = contribution_markers["net_contributions"].apply(
                     lambda value: f"Net contribution: {money(value)}"
                 )
-                account_fig.add_trace(
-                    go.Scatter(
-                        x=contribution_markers["month"],
-                        y=contribution_markers["current_balance"],
-                        mode="markers",
-                        name="Contribution / withdrawal month",
-                        marker=dict(symbol="diamond", size=13, color="#f2c875", line=dict(color="#08080a", width=1)),
-                        text=contribution_markers["marker_label"],
-                        hovertemplate="%{text}<br>Balance: £%{y:,.2f}<extra></extra>",
+                contribution_markers["month"] = pd.to_datetime(contribution_markers["month"])
+                contribution_markers["current_balance"] = pd.to_numeric(
+                    contribution_markers["current_balance"],
+                    errors="coerce",
+                )
+                marker_chart = (
+                    alt.Chart(contribution_markers)
+                    .mark_point(filled=True, shape="diamond", size=130, color="#f2c875")
+                    .encode(
+                        x=alt.X("month:T", title="Month"),
+                        y=alt.Y("current_balance:Q", title="Balance (£)"),
+                        tooltip=[
+                            alt.Tooltip("month:T", title="Month", format="%b %Y"),
+                            alt.Tooltip("marker_label:N", title="Event"),
+                            alt.Tooltip("current_balance:Q", title="Balance", format=",.2f"),
+                        ],
                     )
                 )
+                line_chart = line_chart + marker_chart
 
-            account_fig.update_layout(title=f"{account} Balance and Projection")
-            st.plotly_chart(chart_theme(account_fig), width="stretch")
+            st.altair_chart(line_chart, width="stretch")
 
             account_events = pd.DataFrame()
             if not contribution_events.empty:
