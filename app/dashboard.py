@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -2177,6 +2177,89 @@ def render_edit_entries(default_month: date) -> None:
 DELETE_MODELS = RECORD_MODELS
 
 
+def account_dependency_counts(account_ids: list[int]) -> dict[int, dict[str, int]]:
+    """Count records that would become orphaned if an account was removed."""
+    dependencies = {account_id: {} for account_id in account_ids}
+    if not account_ids:
+        return dependencies
+
+    with session_scope() as session:
+        for account_id in account_ids:
+            checks = {
+                "Account Balance Snapshots": select(MonthlyAccountSnapshot.id).where(
+                    MonthlyAccountSnapshot.account_id == account_id
+                ),
+                "Income Entries": select(MonthlyIncome.id).where(MonthlyIncome.target_account_id == account_id),
+                "Expense Entries": select(MonthlyExpense.id).where(MonthlyExpense.source_account_id == account_id),
+                "Transfers": select(MonthlyTransfer.id).where(
+                    or_(
+                        MonthlyTransfer.from_account_id == account_id,
+                        MonthlyTransfer.to_account_id == account_id,
+                    )
+                ),
+                "Debt Details": select(DebtProfile.id).where(DebtProfile.account_id == account_id),
+                "Goal Allocations": select(MonthlyGoalAllocation.id).where(
+                    MonthlyGoalAllocation.account_id == account_id
+                ),
+            }
+            for label, query in checks.items():
+                count = len(session.scalars(query).all())
+                if count:
+                    dependencies[account_id][label] = count
+
+    return dependencies
+
+
+def dependency_warning_html(selected_rows: list[dict], dependencies: dict[int, dict[str, int]]) -> str:
+    """Build a readable dependency warning for selected accounts."""
+    sections = []
+    for row in selected_rows:
+        record_id = int(row["_record_id"])
+        counts = dependencies.get(record_id, {})
+        if not counts:
+            continue
+        items = "".join(f"<li>{escape(label)}: {count}</li>" for label, count in counts.items())
+        sections.append(
+            "<div style='margin:0.65rem 0;'>"
+            f"<strong>{escape(row['Record'])}</strong>"
+            f"<ul style='margin:0.4rem 0 0.2rem 1.2rem;'>{items}</ul>"
+            "</div>"
+        )
+
+    if not sections:
+        return ""
+
+    return (
+        "<div style='background:rgba(255,107,107,0.08); border:1px solid rgba(255,107,107,0.35); "
+        "border-radius:12px; padding:0.9rem; color:#f7f1f1; margin:0.75rem 0;'>"
+        "<strong>These account(s) have linked records.</strong>"
+        f"{''.join(sections)}"
+        "</div>"
+    )
+
+
+def delete_account_dependencies(session, account_ids: list[int]) -> None:
+    """Delete records linked to an account before deleting the account itself."""
+    for account_id in account_ids:
+        for model, condition in [
+            (MonthlyAccountSnapshot, MonthlyAccountSnapshot.account_id == account_id),
+            (MonthlyIncome, MonthlyIncome.target_account_id == account_id),
+            (MonthlyExpense, MonthlyExpense.source_account_id == account_id),
+            (
+                MonthlyTransfer,
+                or_(
+                    MonthlyTransfer.from_account_id == account_id,
+                    MonthlyTransfer.to_account_id == account_id,
+                ),
+            ),
+            (DebtProfile, DebtProfile.account_id == account_id),
+            (MonthlyGoalAllocation, MonthlyGoalAllocation.account_id == account_id),
+        ]:
+            records = session.scalars(select(model).where(condition)).all()
+            for record in records:
+                session.delete(record)
+
+
 def lookup_names() -> tuple[dict[int, str], dict[int, str]]:
     """Return account and goal names for friendly record previews."""
     with session_scope() as session:
@@ -2343,42 +2426,49 @@ def render_delete_entries() -> None:
         return
 
     st.caption("Select one or more records, confirm, then delete them together.")
-    display_rows = []
-    record_ids_by_display_row = []
-    for row in rows:
-        record_ids_by_display_row.append(row["_record_id"])
-        display_rows.append({"Select": False, **{key: value for key, value in row.items() if key != "_record_id"}})
+    preview = pd.DataFrame([{key: value for key, value in row.items() if key != "_record_id"} for row in rows])
+    static_table(preview)
 
-    delete_table = pd.DataFrame(display_rows)
-    edited_table = st.data_editor(
-        delete_table,
-        width="stretch",
-        hide_index=True,
-        key=f"delete_table_{record_type}",
-        disabled=[column for column in delete_table.columns if column != "Select"],
-        column_config={
-            "Select": st.column_config.CheckboxColumn(
-                "Select",
-                help="Tick every record you want to delete.",
-            )
-        },
+    choices_by_label = {row["Record"]: row for row in rows}
+    selected_labels = st.multiselect(
+        "Records to delete",
+        list(choices_by_label),
+        key=f"delete_records_{record_type}",
+        placeholder="Choose one or more records",
     )
-
-    selected_indexes = edited_table.index[edited_table["Select"]].tolist()
-    selected_record_ids = [record_ids_by_display_row[index] for index in selected_indexes]
+    selected_rows = [choices_by_label[label] for label in selected_labels]
+    selected_record_ids = [int(row["_record_id"]) for row in selected_rows]
     if selected_record_ids:
         st.warning(f"{len(selected_record_ids)} record(s) selected for deletion.")
 
-    confirm = st.checkbox("I understand this will permanently delete the selected record(s).")
-    if st.button("Delete selected records", type="primary"):
+    dependencies = account_dependency_counts(selected_record_ids) if record_type == "account" else {}
+    has_account_dependencies = any(dependencies.get(record_id) for record_id in selected_record_ids)
+    delete_dependencies = False
+    if has_account_dependencies:
+        st.markdown(dependency_warning_html(selected_rows, dependencies), unsafe_allow_html=True)
+        delete_dependencies = st.checkbox(
+            "Also delete all linked records for the selected account(s).",
+            key="delete_account_dependencies",
+        )
+
+    confirm = st.checkbox(
+        "I understand this will permanently delete the selected record(s).",
+        key=f"delete_confirm_{record_type}",
+    )
+    if st.button("Delete selected records", type="primary", key=f"delete_button_{record_type}"):
         if not selected_record_ids:
             st.error("Select at least one record to delete.")
+            return
+        if has_account_dependencies and not delete_dependencies:
+            st.error("This account has linked records. Tick the linked-record checkbox, or delete those records first.")
             return
         if not confirm:
             st.error("Tick the confirmation checkbox before deleting.")
             return
 
         with session_scope() as session:
+            if record_type == "account" and delete_dependencies:
+                delete_account_dependencies(session, selected_record_ids)
             for record_id in selected_record_ids:
                 record = session.get(DELETE_MODELS[record_type], int(record_id))
                 if record is not None:

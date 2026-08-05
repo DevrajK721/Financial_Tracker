@@ -19,8 +19,10 @@ env/
 # Keep real account balances, imports, and generated databases out of git.
 data/raw/*
 data/processed/*
+data/runtime/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/runtime/.gitkeep
 *.db
 *.db-*
 *.sqlite
