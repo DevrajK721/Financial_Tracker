@@ -124,7 +124,7 @@ To use it:
 3. Drag `Finance Tracker.app` into your Dock.
 4. Click it whenever you want to use the dashboard.
 
-The app starts Streamlit in the background, waits until it is ready, then opens the dashboard in Google Chrome. If the dashboard is already running from this launcher, clicking the app reuses the existing server instead of starting another one.
+The app starts Streamlit in the background, waits until it is ready, then opens the dashboard in Google Chrome. If the dashboard is already running from this launcher, clicking the app reuses the existing server instead of starting another one. If project source files have changed since the dashboard was started, the launcher automatically restarts Streamlit so the Dock app does not serve stale UI.
 
 The generated `.app` is intentionally not committed to git because it contains the absolute path to your local project folder. Anyone else who clones the project should run the same command on their own Mac to create their own launcher.
 

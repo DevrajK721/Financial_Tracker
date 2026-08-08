@@ -24,6 +24,15 @@ PID_FILE = RUNTIME_DIR / "dashboard.json"
 LOG_FILE = RUNTIME_DIR / "dashboard.log"
 DEFAULT_PORT = 8501
 MAX_PORT_ATTEMPTS = 20
+SOURCE_PATHS = [
+    PROJECT_ROOT / "app",
+    PROJECT_ROOT / "cli",
+    PROJECT_ROOT / "scripts",
+    PROJECT_ROOT / "src",
+    PROJECT_ROOT / "finance.py",
+    PROJECT_ROOT / "requirements.txt",
+    PROJECT_ROOT / ".streamlit",
+]
 
 
 def escape_applescript_text(value: str) -> str:
@@ -51,6 +60,36 @@ def process_is_running(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def source_signature() -> float:
+    """Return a simple version stamp for source files used by the dashboard."""
+    latest_mtime = 0.0
+    for path in SOURCE_PATHS:
+        if not path.exists():
+            continue
+        if path.is_file():
+            latest_mtime = max(latest_mtime, path.stat().st_mtime)
+            continue
+        for child in path.rglob("*"):
+            if child.is_file() and "__pycache__" not in child.parts:
+                latest_mtime = max(latest_mtime, child.stat().st_mtime)
+    return latest_mtime
+
+
+def stop_process(pid: int) -> None:
+    """Stop a dashboard process previously launched by this helper."""
+    if not process_is_running(pid):
+        return
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        return
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not process_is_running(pid):
+            return
+        time.sleep(0.2)
 
 
 def port_is_available(port: int) -> bool:
@@ -95,7 +134,12 @@ def existing_dashboard_port() -> int | None:
         state = json.loads(PID_FILE.read_text())
         pid = int(state["pid"])
         port = int(state["port"])
+        recorded_signature = float(state.get("source_signature", 0))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    if recorded_signature != source_signature():
+        stop_process(pid)
         return None
 
     if process_is_running(pid) and dashboard_is_ready(port):
@@ -178,7 +222,16 @@ def main() -> None:
         if port is None:
             port = first_available_port()
             process = start_dashboard(port)
-            PID_FILE.write_text(json.dumps({"pid": process.pid, "port": port}, indent=2))
+            PID_FILE.write_text(
+                json.dumps(
+                    {
+                        "pid": process.pid,
+                        "port": port,
+                        "source_signature": source_signature(),
+                    },
+                    indent=2,
+                )
+            )
 
             if not wait_until_ready(port):
                 raise RuntimeError(
